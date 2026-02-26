@@ -1,0 +1,64 @@
+// ═══════════════════════════════════════════════════════════════
+// MITS Smart ID — AES-256-GCM Crypto Service
+// Encrypt/decrypt QR code payloads
+// ═══════════════════════════════════════════════════════════════
+
+const crypto = require('crypto');
+const config = require('../config/env');
+
+const ALGORITHM = 'aes-256-gcm';
+const KEY = Buffer.from(config.AES_KEY, 'hex'); // 32 bytes = 256 bits
+const IV_LENGTH = config.AES_IV_LENGTH; // 16 bytes
+const AUTH_TAG_LENGTH = 16; // bytes
+
+/**
+ * Encrypt a payload object into a base64url token.
+ * Format: [IV (16 bytes)][AuthTag (16 bytes)][Ciphertext]
+ * @param {object} payload - JSON-serializable object (e.g. { enrollmentNo, cardId })
+ * @returns {string} base64url-encoded encrypted token
+ */
+function encryptToken(payload) {
+    if (payload === undefined || payload === null) {
+        throw new Error('Payload cannot be undefined or null');
+    }
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
+    const jsonStr = JSON.stringify(payload);
+    const encrypted = Buffer.concat([cipher.update(jsonStr, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    const combined = Buffer.concat([iv, authTag, encrypted]);
+    return combined.toString('base64url');
+}
+
+/**
+ * Decrypt a base64url token back to a payload object.
+ * IMPORTANT: Does NOT catch errors — let them propagate for tamper detection.
+ * @param {string} token - base64url-encoded encrypted token
+ * @returns {object} decrypted payload
+ */
+function decryptToken(token) {
+    if (!token || typeof token !== 'string') {
+        throw new Error('Token must be a non-empty string');
+    }
+    const buf = Buffer.from(token, 'base64url');
+    if (buf.length < IV_LENGTH + AUTH_TAG_LENGTH + 1) {
+        throw new Error('Token too short to be valid');
+    }
+    const iv = buf.subarray(0, IV_LENGTH);
+    const authTag = buf.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
+    const ciphertext = buf.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
+    const decipher = crypto.createDecipheriv(ALGORITHM, KEY, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return JSON.parse(decrypted.toString('utf8'));
+}
+
+/**
+ * Generate a unique card UID in format CRD-XXXX (uppercase hex).
+ * @returns {string} card UID
+ */
+function generateCardUid() {
+    return 'CRD-' + crypto.randomBytes(2).toString('hex').toUpperCase();
+}
+
+module.exports = { encryptToken, decryptToken, generateCardUid };

@@ -1,0 +1,398 @@
+// ═══════════════════════════════════════════════════════════════
+// MITS Smart ID — Prisma Schema for MongoDB
+// ═══════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────
+enum StudentType {
+  DAY_SCHOLAR
+  HOSTELLER_BOYS
+  HOSTELLER_GIRLS
+}
+
+enum CardStatus {
+  ACTIVE
+  LOST
+  INACTIVE
+  REPLACED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  DEPT_ADMIN
+  MODULE_ADMIN
+  OPERATOR
+  FACULTY
+}
+
+enum AdminModule {
+  LIBRARY
+  MESS
+  CANTEEN
+  HEALTH
+  FINANCE
+  EVENTS
+}
+
+enum AttendanceMethod {
+  SCAN
+  MANUAL_OVERRIDE
+}
+
+enum AttendanceSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum WalletTxnType {
+  TOPUP
+  DEBIT
+}
+
+enum ExitDirection {
+  EXIT
+  ENTRY
+}
+
+enum ExitMode {
+  SINGLE
+  UNLIMITED
+  CUSTOM
+}
+
+// ─── Models ──────────────────────────────────────────────────
+
+model Student {
+  id              String       @id @default(auto()) @map("_id") @db.ObjectId
+  enrollmentNo    String       @unique
+  fullName        String
+  email           String       @unique
+  phone           String?
+  department      String
+  year            Int          // 1-4
+  section         String?
+  studentType     StudentType
+  photoUrl        String?
+  bloodGroup      String?
+  allergies       String[]     @default([])
+  conditions      String[]     @default([])
+  emergencyName   String?
+  emergencyPhone  String?
+  fcmToken        String?
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  cards                Card[]
+  attendanceRecords    AttendanceRecord[]
+  scanEvents           ScanEvent[]
+  exitEvents           ExitEvent[]
+  wallet               Wallet?
+  libraryTransactions  LibraryTransaction[]
+  votes                Vote[]
+
+  @@map("students")
+}
+
+model Card {
+  id              String      @id @default(auto()) @map("_id") @db.ObjectId
+  studentId       String      @db.ObjectId
+  cardUid         String      @unique
+  qrToken         String      @unique
+  status          CardStatus  @default(ACTIVE)
+  issuedAt        DateTime    @default(now())
+  deactivatedAt   DateTime?
+  deactivatedById String?     @db.ObjectId
+  notes           String?
+
+  student         Student     @relation(fields: [studentId], references: [id])
+  deactivatedBy   AdminUser?  @relation("DeactivatedCards", fields: [deactivatedById], references: [id])
+  scanEvents      ScanEvent[]
+
+  @@map("cards")
+}
+
+model AdminUser {
+  id              String      @id @default(auto()) @map("_id") @db.ObjectId
+  name            String
+  email           String      @unique
+  passwordHash    String
+  role            AdminRole
+  department      String?
+  module          AdminModule?
+  isActive        Boolean     @default(true)
+  lastLogin       DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  scannedEvents       ScanEvent[]
+  deactivatedCards    Card[]           @relation("DeactivatedCards")
+  exitRulesUpdated    ExitRule[]
+  exitOverrides       ExitEvent[]      @relation("ExitOverrides")
+  attendanceSessions  AttendanceSession[]
+  attendanceOverrides AttendanceRecord[] @relation("AttendanceOverrides")
+  subjects            Subject[]
+  campusEvents        CampusEvent[]
+  auditLogs           AuditLog[]
+
+  @@map("admin_users")
+}
+
+model Gate {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String
+  location   String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  scanEvents  ScanEvent[]
+  exitEvents  ExitEvent[]
+
+  @@map("gates")
+}
+
+model ScanEvent {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  studentId   String?  @db.ObjectId
+  cardId      String?  @db.ObjectId
+  scannedById String   @db.ObjectId
+  scanType    String
+  result      String
+  gpsLat      Float?
+  gpsLng      Float?
+  gateId      String?  @db.ObjectId
+  metadata    Json?
+  scannedAt   DateTime @default(now())
+
+  student     Student?  @relation(fields: [studentId], references: [id])
+  card        Card?     @relation(fields: [cardId], references: [id])
+  scannedBy   AdminUser @relation(fields: [scannedById], references: [id])
+  gate        Gate?     @relation(fields: [gateId], references: [id])
+
+  @@map("scan_events")
+}
+
+model ExitRule {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  studentType StudentType
+  dayOfWeek   Int         // 1=Mon ... 7=Sun
+  maxExits    Int
+  updatedById String?     @db.ObjectId
+  updatedAt   DateTime    @default(now()) @updatedAt
+
+  updatedBy   AdminUser?  @relation(fields: [updatedById], references: [id])
+
+  @@unique([studentType, dayOfWeek])
+  @@map("exit_rules")
+}
+
+model ExitEvent {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  studentId    String        @db.ObjectId
+  gateId       String?       @db.ObjectId
+  direction    ExitDirection
+  eventDate    DateTime
+  eventTime    DateTime      @default(now())
+  overrideById String?       @db.ObjectId
+
+  student      Student       @relation(fields: [studentId], references: [id])
+  gate         Gate?         @relation(fields: [gateId], references: [id])
+  overrideBy   AdminUser?    @relation("ExitOverrides", fields: [overrideById], references: [id])
+
+  @@map("exit_events")
+}
+
+model CampusEvent {
+  id          String     @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  eventDate   DateTime
+  startTime   DateTime
+  endTime     DateTime
+  exitMode    ExitMode   @default(SINGLE)
+  customMax   Int?
+  appliesTo   String[]   @default(["ALL"])
+  gateIds     String[]   @default([])
+  isActive    Boolean    @default(true)
+  createdById String     @db.ObjectId
+  createdAt   DateTime   @default(now())
+
+  createdBy   AdminUser  @relation(fields: [createdById], references: [id])
+
+  @@map("campus_events")
+}
+
+model Subject {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  code        String   @unique
+  name        String
+  department  String
+  semester    Int
+  facultyId   String   @db.ObjectId
+  createdAt   DateTime @default(now())
+
+  faculty     AdminUser           @relation(fields: [facultyId], references: [id])
+  timetableSlots TimetableSlot[]
+  attendanceSessions AttendanceSession[]
+
+  @@map("subjects")
+}
+
+model TimetableSlot {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  subjectId       String   @db.ObjectId
+  dayOfWeek       Int
+  startTime       DateTime
+  endTime         DateTime
+  room            String?
+  gpsLat          Float?
+  gpsLng          Float?
+  gpsRadiusMetres Int      @default(50)
+
+  subject         Subject  @relation(fields: [subjectId], references: [id])
+
+  @@map("timetable_slots")
+}
+
+model AttendanceSession {
+  id              String                  @id @default(auto()) @map("_id") @db.ObjectId
+  subjectId       String                  @db.ObjectId
+  facultyId       String                  @db.ObjectId
+  status          AttendanceSessionStatus  @default(OPEN)
+  windowMinutes   Int                     @default(15)
+  startedAt       DateTime                @default(now())
+  closedAt        DateTime?
+
+  subject         Subject                 @relation(fields: [subjectId], references: [id])
+  faculty         AdminUser               @relation(fields: [facultyId], references: [id])
+  records         AttendanceRecord[]
+
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId       String           @db.ObjectId
+  studentId       String           @db.ObjectId
+  method          AttendanceMethod @default(SCAN)
+  gpsLat          Float?
+  gpsLng          Float?
+  overrideById    String?          @db.ObjectId
+  overrideReason  String?
+  markedAt        DateTime         @default(now())
+
+  session         AttendanceSession @relation(fields: [sessionId], references: [id])
+  student         Student           @relation(fields: [studentId], references: [id])
+  overrideBy      AdminUser?        @relation("AttendanceOverrides", fields: [overrideById], references: [id])
+
+  @@unique([sessionId, studentId])
+  @@map("attendance_records")
+}
+
+model Wallet {
+  id          String     @id @default(auto()) @map("_id") @db.ObjectId
+  studentId   String     @unique @db.ObjectId
+  balance     Float      @default(0)
+  updatedAt   DateTime   @updatedAt
+
+  student     Student    @relation(fields: [studentId], references: [id])
+  transactions WalletTransaction[]
+
+  @@map("wallets")
+}
+
+model WalletTransaction {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  walletId     String        @db.ObjectId
+  type         WalletTxnType
+  amount       Float
+  balanceAfter Float
+  note         String?
+  createdAt    DateTime      @default(now())
+
+  wallet       Wallet        @relation(fields: [walletId], references: [id])
+
+  @@map("wallet_transactions")
+}
+
+model Book {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  isbn            String?
+  title           String
+  author          String
+  qrCode          String   @unique
+  totalCopies     Int      @default(1)
+  availableCopies Int      @default(1)
+  createdAt       DateTime @default(now())
+
+  transactions    LibraryTransaction[]
+
+  @@map("books")
+}
+
+model LibraryTransaction {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  studentId   String   @db.ObjectId
+  bookId      String   @db.ObjectId
+  issuedAt    DateTime @default(now())
+  dueAt       DateTime
+  returnedAt  DateTime?
+  fineAmount  Float    @default(0)
+
+  student     Student  @relation(fields: [studentId], references: [id])
+  book        Book     @relation(fields: [bookId], references: [id])
+
+  @@map("library_transactions")
+}
+
+model Election {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  title       String
+  candidates  String[]
+  openAt      DateTime
+  closeAt     DateTime
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  votes       Vote[]
+
+  @@map("elections")
+}
+
+model Vote {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  electionId  String   @db.ObjectId
+  studentId   String   @db.ObjectId
+  candidate   String
+  votedAt     DateTime @default(now())
+
+  election    Election @relation(fields: [electionId], references: [id])
+  student     Student  @relation(fields: [studentId], references: [id])
+
+  @@unique([electionId, studentId])
+  @@map("votes")
+}
+
+model AuditLog {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId     String   @db.ObjectId
+  action      String
+  entity      String
+  entityId    String?
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  loggedAt    DateTime @default(now())
+
+  actor       AdminUser @relation(fields: [actorId], references: [id])
+
+  @@map("audit_logs")
+}

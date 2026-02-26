@@ -1,0 +1,55 @@
+{
+  "name": "mits-smartid-api",
+  "version": "1.0.0",
+  "description": "MITS Smart ID Card Management System — Backend API",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "test": "jest --runInBand",
+    "test:unit": "jest tests/unit --coverage",
+    "test:integration": "jest tests/integration --runInBand",
+    "test:security": "jest tests/security --runInBand",
+    "test:e2e": "jest tests/e2e --runInBand",
+    "test:all": "jest --runInBand --coverage",
+    "test:coverage": "jest --coverage",
+    "test:report": "jest --coverage --coverageReporters=html && open coverage/index.html",
+    "migrate": "prisma migrate deploy",
+    "generate": "prisma generate",
+    "seed": "node prisma/seed.js",
+    "lint": "eslint src/**/*.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.10.0",
+    "@aws-sdk/client-s3": "^3.500.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "express": "^4.18.3",
+    "express-rate-limit": "^7.1.5",
+    "firebase-admin": "^12.0.0",
+    "helmet": "^7.1.0",
+    "ioredis": "^5.3.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3",
+    "socket.io": "^4.7.4",
+    "uuid": "^9.0.0",
+    "winston": "^3.11.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.3",
+    "prisma": "^5.10.0",
+    "supertest": "^6.3.4"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
