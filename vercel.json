@@ -8,31 +8,20 @@
     ],
     "routes": [
         {
-            "src": "/(.*)",
-            "methods": [
-                "OPTIONS"
-            ],
-            "headers": {
-                "Access-Control-Allow-Origin": "http://localhost:5173",
-                "Access-Control-Allow-Methods": "GET,OPTIONS,PATCH,DELETE,POST,PUT",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                "Access-Control-Allow-Credentials": "true",
-                "Access-Control-Max-Age": "86400"
-            },
-            "status": 204,
-            "continue": false
-        },
-        {
             "src": "/api/(.*)",
             "dest": "api/index.js"
         },
         {
             "src": "/health",
             "dest": "api/index.js"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "api/index.js"
         }
     ],
     "env": {
         "NODE_ENV": "production",
-        "DASHBOARD_URL": "http://localhost:5173"
+        "DASHBOARD_URL": "http://localhost:5173,https://smart-id-frontend-ashy.vercel.app"
     }
 }

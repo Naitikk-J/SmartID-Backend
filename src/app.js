@@ -53,9 +53,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Pre-flight for all routes
-app.options('*', cors());
-
 // ── 3. Body parsing ─────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false }));
