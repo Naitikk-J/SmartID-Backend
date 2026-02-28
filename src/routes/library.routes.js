@@ -11,6 +11,7 @@ const libraryService = require('../services/library.service');
 const { decryptToken } = require('../services/crypto.service');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -53,6 +54,13 @@ router.post('/issue', authenticate, requireModule('LIBRARY'), validate(issueSche
             studentId: student.id,
             bookQrCode: req.body.bookQrCode,
         });
+        await logAction(req, {
+            action: 'ISSUE_BOOK',
+            entity: 'LibraryTransaction',
+            entityId: transaction.id.toString(),
+            newValue: { studentId: student.id, bookQrCode: req.body.bookQrCode }
+        }).catch(() => { });
+
         res.status(201).json({ success: true, data: { transaction } });
     } catch (err) {
         next(err);
@@ -67,6 +75,13 @@ router.post('/return', authenticate, requireModule('LIBRARY'), validate(returnSc
             studentId: student.id,
             bookQrCode: req.body.bookQrCode,
         });
+        await logAction(req, {
+            action: 'RETURN_BOOK',
+            entity: 'LibraryTransaction',
+            entityId: transaction.id.toString(),
+            newValue: { studentId: student.id, bookQrCode: req.body.bookQrCode }
+        }).catch(() => { });
+
         res.json({ success: true, data: { transaction } });
     } catch (err) {
         next(err);
@@ -113,6 +128,13 @@ router.get('/books', authenticate, requireModule('LIBRARY'), async (req, res, ne
 router.post('/books', authenticate, requireModule('LIBRARY'), validate(addBookSchema), async (req, res, next) => {
     try {
         const book = await libraryService.addBook(req.body);
+        await logAction(req, {
+            action: 'ADD_BOOK',
+            entity: 'Book',
+            entityId: book.id.toString(),
+            newValue: req.body
+        }).catch(() => { });
+
         res.status(201).json({ success: true, data: { book } });
     } catch (err) {
         next(err);

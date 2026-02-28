@@ -9,6 +9,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -52,6 +53,13 @@ router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(creat
             },
         });
         res.status(201).json({ success: true, data: { event } });
+
+        await logAction(req, {
+            action: 'CREATE_CAMPUS_EVENT',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            newValue: req.body
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -70,6 +78,13 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
             data,
         });
         res.json({ success: true, data: { event } });
+
+        await logAction(req, {
+            action: 'UPDATE_CAMPUS_EVENT',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            newValue: req.body
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -88,6 +103,13 @@ router.patch('/:id/toggle', authenticate, requireRole('SUPER_ADMIN'), async (req
             data: { isActive: !current.isActive },
         });
         res.json({ success: true, data: { event } });
+
+        await logAction(req, {
+            action: 'TOGGLE_CAMPUS_EVENT',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            newValue: { isActive: event.isActive }
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -101,6 +123,12 @@ router.delete('/:id', authenticate, requireRole('SUPER_ADMIN'), async (req, res,
             data: { isActive: false },
         });
         res.json({ success: true, data: { event, message: 'Event deactivated' } });
+
+        await logAction(req, {
+            action: 'DEACTIVATE_CAMPUS_EVENT',
+            entity: 'CampusEvent',
+            entityId: event.id
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }

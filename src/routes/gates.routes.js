@@ -9,6 +9,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const exitService = require('../services/exit.service');
 const { emitExitRuleChange } = require('../sockets/scanFeed.socket');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -49,6 +50,13 @@ router.patch('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), val
         emitExitRuleChange(updatedGrid);
 
         res.json({ success: true, data: { rule } });
+
+        await logAction(req, {
+            action: 'UPDATE_EXIT_RULE',
+            entity: 'ExitRule',
+            entityId: rule.id,
+            newValue: req.body
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -89,6 +97,13 @@ router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'S
             success: true,
             data: { event },
         });
+
+        await logAction(req, {
+            action: 'EXIT_OVERRIDE',
+            entity: 'ExitEvent',
+            entityId: event.id.toString(),
+            newValue: req.body
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }

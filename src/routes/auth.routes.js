@@ -13,6 +13,7 @@ const { authenticate, redis } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { loginRateLimit } = require('../middleware/rateLimit');
 const { AppError } = require('../middleware/errorHandler');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -57,6 +58,13 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
 
         const validPassword = await bcrypt.compare(password, user.passwordHash);
         if (!validPassword) {
+            await logAction(req, {
+                action: 'LOGIN_FAILURE',
+                entity: 'AdminUser',
+                entityId: user.id,
+                userId: user.id,
+                newValue: { email, reason: 'Invalid password' }
+            }).catch(() => { });
             throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
         }
 
@@ -67,6 +75,13 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
         });
 
         const tokens = generateTokens(user);
+
+        await logAction(req, {
+            action: 'LOGIN_SUCCESS',
+            entity: 'AdminUser',
+            entityId: user.id,
+            userId: user.id
+        }).catch(() => { });
 
         res.json({
             success: true,
@@ -122,6 +137,12 @@ router.post('/logout', authenticate, async (req, res, next) => {
         } catch (redisErr) {
             console.warn('⚠️ Failed to blacklist token in Redis on logout (skipping):', redisErr.message);
         }
+
+        await logAction(req, {
+            action: 'LOGOUT',
+            entity: 'AdminUser',
+            entityId: req.user.id
+        }).catch(() => { });
 
         res.json({ success: true, data: { message: 'Logged out successfully' } });
     } catch (err) {

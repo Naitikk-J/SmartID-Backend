@@ -387,18 +387,6 @@ async function logScanEvent({ studentId, cardId, scannedById, scanType, gateId, 
     if (cardId) data.cardId = cardId;
     if (gateId) data.gateId = gateId;
 
-    // If no studentId, we need to create a "dummy" reference or handle differently
-    if (!studentId) {
-        // For FAKE scans without a student, we won't create a DB record with an FK
-        // Instead, log it and return a synthetic event
-        logger.warn('Scan event without student', { scanType, result });
-        return {
-            id: Date.now().toString(),
-            ...data,
-            scannedAt: new Date(),
-        };
-    }
-
     return prisma.scanEvent.create({ data });
 }
 

@@ -10,6 +10,7 @@ const { validate } = require('../middleware/validate');
 const walletService = require('../services/wallet.service');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -43,6 +44,13 @@ router.post('/:studentId/topup', authenticate, requireModule('CANTEEN'), validat
             note: req.body.note,
             adminId: req.user.id,
         });
+        await logAction(req, {
+            action: 'WALLET_TOPUP',
+            entity: 'Wallet',
+            entityId: result.wallet.id,
+            newValue: { amount: req.body.amount, note: req.body.note, studentId: req.params.studentId }
+        }).catch(() => { });
+
         res.json({
             success: true,
             data: {
@@ -75,6 +83,13 @@ router.post('/deduct', authenticate, requireModule('CANTEEN'), validate(deductSc
             amount: req.body.amount,
             note: req.body.note,
         });
+
+        await logAction(req, {
+            action: 'WALLET_DEDUCT',
+            entity: 'Wallet',
+            entityId: result.wallet.id,
+            newValue: { amount: req.body.amount, note: req.body.note, studentId: card.student.id }
+        }).catch(() => { });
 
         res.json({ success: true, data: result });
     } catch (err) {

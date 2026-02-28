@@ -11,6 +11,7 @@ const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
 const { encryptToken, generateCardUid } = require('../services/crypto.service');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -92,6 +93,13 @@ router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createStuden
         await prisma.card.create({
             data: { studentId: student.id, cardUid, qrToken, status: 'ACTIVE' },
         });
+
+        await logAction(req, {
+            action: 'CREATE_STUDENT',
+            entity: 'Student',
+            entityId: student.id,
+            newValue: student
+        }).catch(() => { });
 
         res.status(201).json({ success: true, data: { student } });
     } catch (err) {
@@ -178,6 +186,14 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
             where: { id: req.params.id },
             data: req.body,
         });
+
+        await logAction(req, {
+            action: 'UPDATE_STUDENT',
+            entity: 'Student',
+            entityId: student.id,
+            newValue: req.body
+        }).catch(() => { });
+
         res.json({ success: true, data: { student } });
     } catch (err) {
         next(err);
@@ -191,6 +207,13 @@ router.delete('/:id', authenticate, requireRole('SUPER_ADMIN'), async (req, res,
             where: { id: req.params.id },
             data: { isActive: false },
         });
+
+        await logAction(req, {
+            action: 'DEACTIVATE_STUDENT',
+            entity: 'Student',
+            entityId: student.id
+        }).catch(() => { });
+
         res.json({ success: true, data: { student, message: 'Student deactivated' } });
     } catch (err) {
         next(err);
@@ -210,6 +233,14 @@ router.post('/:id/card/deactivate', authenticate, requireRole('HOD', 'SUPER_ADMI
             where: { id: card.id },
             data: { status, deactivatedAt: new Date(), deactivatedById: req.user.id },
         });
+
+        await logAction(req, {
+            action: 'CARD_DEACTIVATED',
+            entity: 'Card',
+            entityId: updated.id,
+            newValue: { status, studentId: req.params.id }
+        }).catch(() => { });
+
         res.json({ success: true, data: { card: updated } });
     } catch (err) {
         next(err);
@@ -235,6 +266,13 @@ router.post('/:id/card/replace', authenticate, requireRole('HOD', 'SUPER_ADMIN')
         const newCard = await prisma.card.create({
             data: { studentId, cardUid, qrToken, status: 'ACTIVE' },
         });
+
+        await logAction(req, {
+            action: 'CARD_REPLACED',
+            entity: 'Student',
+            entityId: studentId,
+            newValue: { newCardId: newCard.id }
+        }).catch(() => { });
 
         res.json({ success: true, data: { card: newCard } });
     } catch (err) {

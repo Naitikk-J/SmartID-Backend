@@ -10,6 +10,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -61,16 +62,12 @@ router.post('/users', authenticate, requireRole('SUPER_ADMIN'), validate(createA
         });
 
         // Audit log
-        await prisma.auditLog.create({
-            data: {
-                actorId: req.user.id,
-                action: 'CREATE_ADMIN_USER',
-                entity: 'AdminUser',
-                entityId: user.id,
-                newValue: { name: user.name, email: user.email, role: user.role },
-                ipAddress: req.ip,
-            },
-        });
+        await logAction(req, {
+            action: 'CREATE_ADMIN_USER',
+            entity: 'AdminUser',
+            entityId: user.id,
+            newValue: { name: user.name, email: user.email, role: user.role }
+        }).catch(() => { });
 
         res.status(201).json({
             success: true,
@@ -94,16 +91,12 @@ router.patch('/users/:id', authenticate, requireRole('SUPER_ADMIN'), validate(up
             data: req.body,
         });
 
-        await prisma.auditLog.create({
-            data: {
-                actorId: req.user.id,
-                action: 'UPDATE_ADMIN_USER',
-                entity: 'AdminUser',
-                entityId: user.id,
-                newValue: req.body,
-                ipAddress: req.ip,
-            },
-        });
+        await logAction(req, {
+            action: 'UPDATE_ADMIN_USER',
+            entity: 'AdminUser',
+            entityId: user.id,
+            newValue: req.body
+        }).catch(() => { });
 
         res.json({
             success: true,
@@ -131,6 +124,13 @@ router.patch('/users/:id/toggle', authenticate, requireRole('SUPER_ADMIN'), asyn
             where: { id: req.params.id },
             data: { isActive: !current.isActive },
         });
+
+        await logAction(req, {
+            action: 'TOGGLE_ADMIN_USER',
+            entity: 'AdminUser',
+            entityId: user.id,
+            newValue: { isActive: user.isActive }
+        }).catch(() => { });
 
         res.json({
             success: true,

@@ -10,6 +10,7 @@ const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
 const scanService = require('../services/scan.service');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -37,6 +38,13 @@ router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createElecti
             },
         });
         res.status(201).json({ success: true, data: { election } });
+
+        await logAction(req, {
+            action: 'CREATE_ELECTION',
+            entity: 'Election',
+            entityId: election.id,
+            newValue: req.body
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -86,6 +94,12 @@ router.patch('/:id/publish', authenticate, requireRole('SUPER_ADMIN'), async (re
             data: { isPublished: true },
         });
         res.json({ success: true, data: { election } });
+
+        await logAction(req, {
+            action: 'PUBLISH_ELECTION',
+            entity: 'Election',
+            entityId: election.id
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }

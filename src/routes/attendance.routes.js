@@ -9,6 +9,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const attendanceService = require('../services/attendance.service');
 const scanService = require('../services/scan.service');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -39,6 +40,13 @@ router.post('/sessions/start', authenticate, requireRole('FACULTY', 'SECURITY_GU
             success: true,
             data: { session },
         });
+
+        await logAction(req, {
+            action: 'START_ATTENDANCE_SESSION',
+            entity: 'AttendanceSession',
+            entityId: session.id.toString(),
+            newValue: { subjectId: req.body.subjectId }
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -52,6 +60,12 @@ router.post('/sessions/:id/close', authenticate, requireRole('FACULTY', 'SECURIT
             success: true,
             data: { session },
         });
+
+        await logAction(req, {
+            action: 'CLOSE_ATTENDANCE_SESSION',
+            entity: 'AttendanceSession',
+            entityId: req.params.id
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -121,6 +135,13 @@ router.post('/sessions/:id/override', authenticate, requireRole('HOD', 'SUPER_AD
             success: true,
             data: { record: { ...record, id: record.id.toString(), sessionId: record.sessionId.toString() } },
         });
+
+        await logAction(req, {
+            action: 'MARK_ATTENDANCE_OVERRIDE',
+            entity: 'AttendanceRecord',
+            entityId: record.id.toString(),
+            newValue: { studentId: req.body.studentId, reason: req.body.reason }
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
