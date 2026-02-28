@@ -402,4 +402,47 @@ function buildResult(result, student, scanEvent, extra = {}) {
     };
 }
 
-module.exports = { verifyScan };
+/**
+ * Get recent scans for the dashboard live feed.
+ */
+async function getRecentScans(limit = 50) {
+    try {
+        const events = await prisma.scanEvent.findMany({
+            take: limit,
+            orderBy: { scannedAt: 'desc' },
+            include: {
+                student: {
+                    select: {
+                        fullName: true,
+                        enrollmentNo: true,
+                        department: true,
+                        photoUrl: true,
+                    }
+                },
+                card: {
+                    select: {
+                        badge: true,
+                    }
+                }
+            }
+        });
+
+        // Transform into the format expected by the frontend
+        return events.map(e => ({
+            id: e.id.toString(),
+            time: e.scannedAt,
+            studentName: e.student?.fullName || 'Unknown',
+            enrollmentNo: e.student?.enrollmentNo || 'N/A',
+            department: e.student?.department || 'N/A',
+            scanType: e.scanType,
+            result: e.result,
+            badge: BADGE_MAP[e.result] || (e.card?.badge || 'GREY'),
+            gateId: e.gateId,
+        }));
+    } catch (err) {
+        logger.error('Failed to fetch recent scans:', err);
+        throw err;
+    }
+}
+
+module.exports = { verifyScan, getRecentScans };

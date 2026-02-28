@@ -51,4 +51,19 @@ router.post(
     }
 );
 
+// GET /recent
+router.get(
+    '/recent',
+    authenticate,
+    requireRole('DEPT_ADMIN', 'SUPER_ADMIN'),
+    async (req, res, next) => {
+        try {
+            const scans = await scanService.getRecentScans(50);
+            res.json({ success: true, data: scans });
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
 module.exports = router;
