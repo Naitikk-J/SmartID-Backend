@@ -40,9 +40,14 @@ const authenticate = async (req, res, next) => {
         }
 
         // Check Redis blacklist (logged-out tokens)
-        const isBlacklisted = await redis.get(`blacklist:${token}`);
-        if (isBlacklisted) {
-            throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
+        try {
+            const isBlacklisted = await redis.get(`blacklist:${token}`);
+            if (isBlacklisted) {
+                throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
+            }
+        } catch (redisErr) {
+            if (redisErr instanceof AppError) throw redisErr;
+            console.warn('⚠️ Redis blacklist check failed (skipping):', redisErr.message);
         }
 
         // Verify JWT

@@ -117,7 +117,11 @@ router.post('/refresh', validate(refreshSchema), async (req, res, next) => {
 router.post('/logout', authenticate, async (req, res, next) => {
     try {
         // Add token to Redis blacklist with 8h TTL
-        await redis.set(`blacklist:${req.token}`, '1', 'EX', 8 * 60 * 60);
+        try {
+            await redis.set(`blacklist:${req.token}`, '1', 'EX', 8 * 60 * 60);
+        } catch (redisErr) {
+            console.warn('⚠️ Failed to blacklist token in Redis on logout (skipping):', redisErr.message);
+        }
 
         res.json({ success: true, data: { message: 'Logged out successfully' } });
     } catch (err) {
