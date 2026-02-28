@@ -35,7 +35,7 @@ const envSchema = z.object({
     // Firebase (optional in dev)
     FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
 
-    // CORS
+    // CORS — comma-separated list of allowed origins
     DASHBOARD_URL: z.string().default('http://localhost:5173'),
 
     // Sentry (optional)
