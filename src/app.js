@@ -31,10 +31,15 @@ app.use(helmet({
 }));
 
 // ── 2. CORS ──────────────────────────────────────────────────
-const allowedOrigins = (config.DASHBOARD_URL || 'http://localhost:5173')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+const allowedOrigins = [
+    'http://localhost:5173',
+    'https://smart-id-frontend-ashy.vercel.app'
+];
+
+// Add from env if present
+if (config.DASHBOARD_URL) {
+    config.DASHBOARD_URL.split(',').forEach(o => allowedOrigins.push(o.trim()));
+}
 
 app.use(cors({
     origin: (origin, callback) => {
