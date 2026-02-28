@@ -8,7 +8,21 @@ const config = require('../config/env');
 const { AppError } = require('./errorHandler');
 const Redis = require('ioredis');
 
-const redis = new Redis(config.REDIS_URL);
+const redis = new Redis(config.REDIS_URL, {
+    maxRetriesPerRequest: 1,
+    retryStrategy: (times) => {
+        if (times > 3) return null; // stop retrying after 3 attempts
+        return Math.min(times * 50, 2000);
+    }
+});
+
+redis.on('error', (err) => {
+    console.warn('⚠️ Redis connection error:', err.message);
+});
+
+redis.on('connect', () => {
+    console.log('✅ Redis connected');
+});
 
 /**
  * Authenticate — extracts and verifies JWT from Authorization header.
