@@ -26,7 +26,9 @@ const adminRoutes = require('./routes/admin.routes');
 const app = express();
 
 // ── 1. Security headers ─────────────────────────────────────
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: false,
+}));
 
 // ── 2. CORS ──────────────────────────────────────────────────
 const allowedOrigins = (config.DASHBOARD_URL || 'http://localhost:5173')
