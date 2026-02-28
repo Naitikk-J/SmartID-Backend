@@ -29,7 +29,7 @@ const verifyScanSchema = z.object({
 router.post(
     '/verify',
     authenticate,
-    requireRole('OPERATOR', 'DEPT_ADMIN', 'SUPER_ADMIN', 'FACULTY'),
+    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
     scanRateLimit,
     validate(verifyScanSchema),
     async (req, res, next) => {

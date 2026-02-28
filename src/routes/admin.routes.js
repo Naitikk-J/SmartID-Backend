@@ -17,13 +17,13 @@ const createAdminSchema = z.object({
     name: z.string().min(1),
     email: z.string().email(),
     password: z.string().min(8, 'Password must be at least 8 characters'),
-    role: z.enum(['SUPER_ADMIN', 'DEPT_ADMIN', 'MODULE_ADMIN', 'OPERATOR']),
+    role: z.enum(['SUPER_ADMIN', 'HOD', 'FACULTY', 'WARDEN', 'SECURITY_GUARD']),
     department: z.preprocess((val) => (val === '' ? null : val), z.string().optional().nullable()),
     module: z.preprocess((val) => (val === '' ? null : val), z.enum(['LIBRARY', 'MESS', 'CANTEEN', 'HEALTH', 'FINANCE', 'EVENTS']).optional().nullable()),
 });
 
 const updateAdminSchema = z.object({
-    role: z.enum(['SUPER_ADMIN', 'DEPT_ADMIN', 'MODULE_ADMIN', 'OPERATOR']).optional(),
+    role: z.enum(['SUPER_ADMIN', 'HOD', 'FACULTY', 'WARDEN', 'SECURITY_GUARD']).optional(),
     department: z.preprocess((val) => (val === '' ? null : val), z.string().optional().nullable()),
     module: z.preprocess((val) => (val === '' ? null : val), z.enum(['LIBRARY', 'MESS', 'CANTEEN', 'HEALTH', 'FINANCE', 'EVENTS']).optional().nullable()),
 });

@@ -76,10 +76,10 @@ const authenticate = async (req, res, next) => {
  */
 const ROLE_HIERARCHY = {
     SUPER_ADMIN: 4,
-    DEPT_ADMIN: 3,
-    MODULE_ADMIN: 2,
-    FACULTY: 1,
-    OPERATOR: 1,
+    HOD: 3,
+    WARDEN: 2,
+    FACULTY: 2,
+    SECURITY_GUARD: 1,
 };
 
 const requireRole = (...roles) => {

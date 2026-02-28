@@ -25,7 +25,7 @@ const overrideSchema = z.object({
 });
 
 // ── GET /exit-rules ─────────────────────────────────────────
-router.get('/exit-rules', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const grid = await exitService.getExitRulesGrid();
         res.json({ success: true, data: { rules: grid } });
@@ -35,7 +35,7 @@ router.get('/exit-rules', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN')
 });
 
 // ── PATCH /exit-rules ───────────────────────────────────────
-router.patch('/exit-rules', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(updateRuleSchema), async (req, res, next) => {
+router.patch('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateRuleSchema), async (req, res, next) => {
     try {
         const rule = await exitService.updateExitRule(
             req.body.studentType,
@@ -55,7 +55,7 @@ router.patch('/exit-rules', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN
 });
 
 // ── GET /exit-history ───────────────────────────────────────
-router.get('/exit-history', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/exit-history', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const result = await exitService.getExitHistory(req.query);
         res.json({
@@ -71,7 +71,7 @@ router.get('/exit-history', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN
 });
 
 // ── POST /exit-override — manual exit/entry ─────────────────
-router.post('/exit-override', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(overrideSchema), async (req, res, next) => {
+router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(overrideSchema), async (req, res, next) => {
     try {
         const event = await exitService.recordExitEvent(
             req.body.studentId,

@@ -92,7 +92,7 @@ router.patch('/:id/publish', authenticate, requireRole('SUPER_ADMIN'), async (re
 });
 
 // ── POST /:id/vote — Cast vote via QR scan ──────────────────
-router.post('/:id/vote', authenticate, requireRole('OPERATOR', 'SUPER_ADMIN'), validate(voteSchema), async (req, res, next) => {
+router.post('/:id/vote', authenticate, requireRole('SECURITY_GUARD', 'SUPER_ADMIN'), validate(voteSchema), async (req, res, next) => {
     try {
         const electionId = req.params.id;
         const election = await prisma.election.findUnique({

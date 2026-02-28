@@ -27,7 +27,7 @@ const createEventSchema = z.object({
 const updateEventSchema = createEventSchema.partial();
 
 // ── GET / — List all events ─────────────────────────────────
-router.get('/', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const events = await prisma.campusEvent.findMany({
             orderBy: { eventDate: 'desc' },
@@ -40,7 +40,7 @@ router.get('/', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (r
 });
 
 // ── POST / — Create event ───────────────────────────────────
-router.post('/', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(createEventSchema), async (req, res, next) => {
+router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(createEventSchema), async (req, res, next) => {
     try {
         const event = await prisma.campusEvent.create({
             data: {
@@ -58,7 +58,7 @@ router.post('/', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validat
 });
 
 // ── PATCH /:id — Update event ───────────────────────────────
-router.patch('/:id', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(updateEventSchema), async (req, res, next) => {
+router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateEventSchema), async (req, res, next) => {
     try {
         const data = { ...req.body };
         if (data.eventDate) data.eventDate = new Date(data.eventDate);

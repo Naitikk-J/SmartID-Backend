@@ -36,7 +36,7 @@ const createStudentSchema = z.object({
 const updateStudentSchema = createStudentSchema.partial();
 
 // ── GET / — List students ───────────────────────────────────
-router.get('/', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { dept, year, search, page = 1, limit = 100, type } = req.query;
         const where = {};
@@ -155,7 +155,7 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
 });
 
 // ── GET /:id — Student detail ───────────────────────────────
-router.get('/:id', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN', 'OPERATOR'), async (req, res, next) => {
+router.get('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'SECURITY_GUARD'), async (req, res, next) => {
     try {
         const student = await prisma.student.findUnique({
             where: { id: req.params.id },
@@ -172,7 +172,7 @@ router.get('/:id', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN', 'OPERA
 });
 
 // ── PATCH /:id — Update student ─────────────────────────────
-router.patch('/:id', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(updateStudentSchema), async (req, res, next) => {
+router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateStudentSchema), async (req, res, next) => {
     try {
         const student = await prisma.student.update({
             where: { id: req.params.id },
@@ -198,7 +198,7 @@ router.delete('/:id', authenticate, requireRole('SUPER_ADMIN'), async (req, res,
 });
 
 // ── POST /:id/card/deactivate ───────────────────────────────
-router.post('/:id/card/deactivate', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.post('/:id/card/deactivate', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { status = 'LOST' } = req.body;
         const card = await prisma.card.findFirst({
@@ -217,7 +217,7 @@ router.post('/:id/card/deactivate', authenticate, requireRole('DEPT_ADMIN', 'SUP
 });
 
 // ── POST /:id/card/replace ──────────────────────────────────
-router.post('/:id/card/replace', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.post('/:id/card/replace', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const studentId = req.params.id;
         const student = await prisma.student.findUnique({ where: { id: studentId } });
@@ -243,7 +243,7 @@ router.post('/:id/card/replace', authenticate, requireRole('DEPT_ADMIN', 'SUPER_
 });
 
 // ── GET /:id/scan-history ───────────────────────────────────
-router.get('/:id/scan-history', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/:id/scan-history', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { page = 1, limit = 50 } = req.query;
         const studentId = req.params.id;

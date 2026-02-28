@@ -12,7 +12,7 @@ const prisma = require('../config/database');
 const router = express.Router();
 
 // ── GET /campus-occupancy ───────────────────────────────────
-router.get('/campus-occupancy', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
@@ -56,7 +56,7 @@ router.get('/campus-occupancy', authenticate, requireRole('DEPT_ADMIN', 'SUPER_A
 });
 
 // ── GET /attendance-summary ─────────────────────────────────
-router.get('/attendance-summary', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/attendance-summary', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         const where = {};
@@ -92,7 +92,7 @@ router.get('/attendance-summary', authenticate, requireRole('DEPT_ADMIN', 'SUPER
 });
 
 // ── GET /gate-activity ──────────────────────────────────────
-router.get('/gate-activity', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/gate-activity', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const gates = await prisma.gate.findMany({
             include: {
@@ -118,7 +118,7 @@ router.get('/gate-activity', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMI
 });
 
 // ── GET /library-stats ──────────────────────────────────────
-router.get('/library-stats', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/library-stats', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const [totalBooks, booksOut, overdueCount] = await Promise.all([
             prisma.book.count(),
@@ -156,7 +156,7 @@ router.get('/library-stats', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMI
 });
 
 // ── POST /custom — Custom report builder ────────────────────
-router.post('/custom', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.post('/custom', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { metrics = [], dateRange, departments = [] } = req.body;
         const startDate = dateRange?.startDate ? new Date(dateRange.startDate) : new Date(new Date().setDate(new Date().getDate() - 30));

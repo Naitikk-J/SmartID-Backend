@@ -27,10 +27,10 @@ enum CardStatus {
 
 enum AdminRole {
   SUPER_ADMIN
-  DEPT_ADMIN
-  MODULE_ADMIN
-  OPERATOR
+  HOD
   FACULTY
+  WARDEN
+  SECURITY_GUARD
 }
 
 enum AdminModule {

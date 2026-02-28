@@ -29,7 +29,7 @@ const overrideSchema = z.object({
 });
 
 // ── POST /sessions/start ────────────────────────────────────
-router.post('/sessions/start', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN', 'SUPER_ADMIN'), validate(startSessionSchema), async (req, res, next) => {
+router.post('/sessions/start', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', 'HOD', 'SUPER_ADMIN'), validate(startSessionSchema), async (req, res, next) => {
     try {
         const session = await attendanceService.startSession({
             subjectId: req.body.subjectId,
@@ -45,7 +45,7 @@ router.post('/sessions/start', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN
 });
 
 // ── POST /sessions/:id/close ────────────────────────────────
-router.post('/sessions/:id/close', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.post('/sessions/:id/close', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', 'HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const session = await attendanceService.closeSession(req.params.id, req.user.id);
         res.json({
@@ -58,7 +58,7 @@ router.post('/sessions/:id/close', authenticate, requireRole('OPERATOR', 'DEPT_A
 });
 
 // ── GET /sessions/:id ──────────────────────────────────────
-router.get('/sessions/:id', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/sessions/:id', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', 'HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const prisma = require('../config/database');
         const session = await prisma.attendanceSession.findUnique({
@@ -92,7 +92,7 @@ router.get('/sessions/:id', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN', 
 });
 
 // ── POST /sessions/:id/mark — scan for attendance ──────────
-router.post('/sessions/:id/mark', authenticate, requireRole('OPERATOR', 'DEPT_ADMIN', 'SUPER_ADMIN'), validate(markSchema), async (req, res, next) => {
+router.post('/sessions/:id/mark', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', 'HOD', 'SUPER_ADMIN'), validate(markSchema), async (req, res, next) => {
     try {
         const result = await scanService.verifyScan({
             rawToken: req.body.rawToken,
@@ -109,7 +109,7 @@ router.post('/sessions/:id/mark', authenticate, requireRole('OPERATOR', 'DEPT_AD
 });
 
 // ── POST /sessions/:id/override ─────────────────────────────
-router.post('/sessions/:id/override', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), validate(overrideSchema), async (req, res, next) => {
+router.post('/sessions/:id/override', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(overrideSchema), async (req, res, next) => {
     try {
         const record = await attendanceService.markAttendance({
             sessionId: req.params.id,
@@ -127,7 +127,7 @@ router.post('/sessions/:id/override', authenticate, requireRole('DEPT_ADMIN', 'S
 });
 
 // ── GET /report ─────────────────────────────────────────────
-router.get('/report', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/report', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const { subjectId, startDate, endDate } = req.query;
         if (!subjectId) {
@@ -142,7 +142,7 @@ router.get('/report', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), as
 });
 
 // ── GET /defaulters ─────────────────────────────────────────
-router.get('/defaulters', authenticate, requireRole('DEPT_ADMIN', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/defaulters', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const threshold = parseInt(req.query.threshold) || 75;
         const defaulters = await attendanceService.getDefaulters(threshold);
