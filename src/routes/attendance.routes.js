@@ -127,7 +127,7 @@ router.post('/sessions/:id/override', authenticate, requireRole('HOD', 'SUPER_AD
 });
 
 // ── GET /report ─────────────────────────────────────────────
-router.get('/report', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/report', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY'), async (req, res, next) => {
     try {
         const { subjectId, startDate, endDate } = req.query;
         if (!subjectId) {
@@ -142,7 +142,7 @@ router.get('/report', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (re
 });
 
 // ── GET /defaulters ─────────────────────────────────────────
-router.get('/defaulters', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/defaulters', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY'), async (req, res, next) => {
     try {
         const threshold = parseInt(req.query.threshold) || 75;
         const defaulters = await attendanceService.getDefaulters(threshold);

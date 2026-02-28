@@ -27,7 +27,7 @@ const createEventSchema = z.object({
 const updateEventSchema = createEventSchema.partial();
 
 // ── GET / — List all events ─────────────────────────────────
-router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
         const events = await prisma.campusEvent.findMany({
             orderBy: { eventDate: 'desc' },

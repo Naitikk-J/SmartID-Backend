@@ -36,7 +36,7 @@ const createStudentSchema = z.object({
 const updateStudentSchema = createStudentSchema.partial();
 
 // ── GET / — List students ───────────────────────────────────
-router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
         const { dept, year, search, page = 1, limit = 100, type } = req.query;
         const where = {};

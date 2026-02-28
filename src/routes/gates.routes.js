@@ -25,7 +25,7 @@ const overrideSchema = z.object({
 });
 
 // ── GET /exit-rules ─────────────────────────────────────────
-router.get('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'WARDEN'), async (req, res, next) => {
     try {
         const grid = await exitService.getExitRulesGrid();
         res.json({ success: true, data: { rules: grid } });
@@ -55,7 +55,7 @@ router.patch('/exit-rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), val
 });
 
 // ── GET /exit-history ───────────────────────────────────────
-router.get('/exit-history', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/exit-history', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'WARDEN'), async (req, res, next) => {
     try {
         const result = await exitService.getExitHistory(req.query);
         res.json({
