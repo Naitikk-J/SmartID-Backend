@@ -421,7 +421,7 @@ async function getRecentScans(limit = 50) {
                 },
                 card: {
                     select: {
-                        badge: true,
+                        status: true,
                     }
                 }
             }
@@ -429,14 +429,14 @@ async function getRecentScans(limit = 50) {
 
         // Transform into the format expected by the frontend
         return events.map(e => ({
-            id: e.id.toString(),
+            id: e.id,
             time: e.scannedAt,
             studentName: e.student?.fullName || 'Unknown',
             enrollmentNo: e.student?.enrollmentNo || 'N/A',
             department: e.student?.department || 'N/A',
             scanType: e.scanType,
             result: e.result,
-            badge: BADGE_MAP[e.result] || (e.card?.badge || 'GREY'),
+            badge: BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
             gateId: e.gateId,
         }));
     } catch (err) {
