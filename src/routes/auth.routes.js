@@ -94,6 +94,7 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
                     role: user.role,
                     department: user.department,
                     module: user.module,
+                    gateId: user.gateId,
                 },
             },
         });

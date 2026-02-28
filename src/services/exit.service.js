@@ -121,13 +121,32 @@ async function countExitsToday(studentId, today) {
 async function recordExitEvent(studentId, gateId, direction = 'EXIT') {
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
+
+    let finalGateId = gateId;
+
+    // Validate gateId - if it's not a valid ObjectId, try to find by name 
+    const isObjectId = (id) => /^[0-9a-fA-F]{24}$/.test(id);
+
+    if (gateId && !isObjectId(gateId)) {
+        logger.info(`Invalid gateId format: ${gateId}. Attempting to find by name.`);
+        const gate = await prisma.gate.findFirst({
+            where: {
+                OR: [
+                    { name: { equals: gateId, mode: 'insensitive' } },
+                    { name: 'Main Gate' }
+                ]
+            }
+        });
+        finalGateId = gate?.id || null;
+    }
+
     return prisma.exitEvent.create({
         data: {
             student: { connect: { id: studentId } },
             direction,
             eventDate: new Date(todayStr),
             eventTime: now,
-            ...(gateId && { gate: { connect: { id: gateId } } }),
+            ...(finalGateId && { gate: { connect: { id: finalGateId } } }),
         },
     });
 }

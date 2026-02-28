@@ -142,6 +142,8 @@ model AdminUser {
   subjects            Subject[]
   campusEvents        CampusEvent[]
   auditLogs           AuditLog[]
+  gateId              String?      @db.ObjectId
+  gate                Gate?        @relation(fields: [gateId], references: [id])
 
   @@map("admin_users")
 }
@@ -155,6 +157,7 @@ model Gate {
 
   scanEvents  ScanEvent[]
   exitEvents  ExitEvent[]
+  admins      AdminUser[]
 
   @@map("gates")
 }
