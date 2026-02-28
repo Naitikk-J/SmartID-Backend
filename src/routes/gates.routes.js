@@ -71,7 +71,7 @@ router.get('/exit-history', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'WAR
 });
 
 // ── POST /exit-override — manual exit/entry ─────────────────
-router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(overrideSchema), async (req, res, next) => {
+router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'SECURITY_GUARD'), validate(overrideSchema), async (req, res, next) => {
     try {
         const event = await exitService.recordExitEvent(
             req.body.studentId,

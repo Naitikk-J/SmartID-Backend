@@ -22,6 +22,7 @@ const BADGE_MAP = {
     DUPLICATE: 'AMBER',
     TIME_EXPIRED: 'RED',
     ALREADY_VOTED: 'AMBER',
+    ALREADY_ENTERED: 'AMBER',
 };
 
 /**
@@ -156,6 +157,28 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
             }
 
             case 'GATE_ENTRY': {
+                // Check if already on campus (last event was ENTRY)
+                const lastEvent = await prisma.exitEvent.findFirst({
+                    where: { studentId: student.id },
+                    orderBy: { eventTime: 'desc' },
+                });
+
+                if (lastEvent && lastEvent.direction === 'ENTRY') {
+                    const event = await logScanEvent({
+                        studentId: student.id,
+                        cardId: card.id,
+                        scannedById: operatorId,
+                        scanType,
+                        gateId,
+                        gpsLat,
+                        gpsLng,
+                        result: 'ALREADY_ENTERED',
+                    });
+                    return buildResult('ALREADY_ENTERED', student, event, {
+                        message: 'Student already entered. Need exit record?',
+                    });
+                }
+
                 await exitService.recordExitEvent(student.id, gateId, 'ENTRY');
                 break;
             }
