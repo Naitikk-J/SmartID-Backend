@@ -55,7 +55,7 @@ router.post(
 router.get(
     '/recent',
     authenticate,
-    requireRole('DEPT_ADMIN', 'SUPER_ADMIN'),
+    requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
     async (req, res, next) => {
         try {
             const scans = await scanService.getRecentScans(50);

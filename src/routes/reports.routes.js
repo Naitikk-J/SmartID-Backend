@@ -12,7 +12,7 @@ const prisma = require('../config/database');
 const router = express.Router();
 
 // ── GET /campus-occupancy ───────────────────────────────────
-router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
@@ -56,7 +56,7 @@ router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN'),
 });
 
 // ── GET /attendance-summary ─────────────────────────────────
-router.get('/attendance-summary', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+router.get('/attendance-summary', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
         const { startDate, endDate } = req.query;
         const where = {};
