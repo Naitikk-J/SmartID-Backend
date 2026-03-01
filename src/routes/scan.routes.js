@@ -58,8 +58,13 @@ router.get(
     requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
     async (req, res, next) => {
         try {
-            const scans = await scanService.getRecentScans(50);
-            res.json({ success: true, data: scans });
+            const { date, page, limit } = req.query;
+            const result = await scanService.getRecentScans({
+                date,
+                page: page ? parseInt(page) : 1,
+                limit: limit ? parseInt(limit) : 50,
+            });
+            res.json({ success: true, data: result });
         } catch (err) {
             next(err);
         }

@@ -158,8 +158,14 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
 
             case 'GATE_ENTRY': {
                 // Check if already on campus (last event was ENTRY)
+                const todayStart = new Date();
+                todayStart.setHours(0, 0, 0, 0);
+
                 const lastEvent = await prisma.exitEvent.findFirst({
-                    where: { studentId: student.id },
+                    where: {
+                        studentId: student.id,
+                        eventTime: { gte: todayStart }
+                    },
                     orderBy: { eventTime: 'desc' },
                 });
 
@@ -416,40 +422,59 @@ function buildResult(result, student, scanEvent, extra = {}) {
 /**
  * Get recent scans for the dashboard live feed.
  */
-async function getRecentScans(limit = 50) {
+async function getRecentScans({ date, page = 1, limit = 50 }) {
     try {
-        const events = await prisma.scanEvent.findMany({
-            take: limit,
-            orderBy: { scannedAt: 'desc' },
-            include: {
-                student: {
-                    select: {
-                        fullName: true,
-                        enrollmentNo: true,
-                        department: true,
-                        photoUrl: true,
-                    }
-                },
-                card: {
-                    select: {
-                        status: true,
+        const where = {};
+
+        if (date) {
+            const start = new Date(date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(date);
+            end.setHours(23, 59, 59, 999);
+            where.scannedAt = { gte: start, lte: end };
+        }
+
+        const [events, total] = await Promise.all([
+            prisma.scanEvent.findMany({
+                where,
+                take: limit,
+                skip: (page - 1) * limit,
+                orderBy: { scannedAt: 'desc' },
+                include: {
+                    student: {
+                        select: {
+                            fullName: true,
+                            enrollmentNo: true,
+                            department: true,
+                            photoUrl: true,
+                        }
+                    },
+                    card: {
+                        select: {
+                            status: true,
+                        }
                     }
                 }
-            }
-        });
+            }),
+            prisma.scanEvent.count({ where })
+        ]);
 
-        // Transform into the format expected by the frontend
-        return events.map(e => ({
-            id: e.id,
-            time: e.scannedAt,
-            studentName: e.student?.fullName || 'Unknown',
-            enrollmentNo: e.student?.enrollmentNo || 'N/A',
-            department: e.student?.department || 'N/A',
-            scanType: e.scanType,
-            result: e.result,
-            badge: BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
-            gateId: e.gateId,
-        }));
+        return {
+            events: events.map(e => ({
+                id: e.id,
+                time: e.scannedAt,
+                studentName: e.student?.fullName || 'Unknown',
+                enrollmentNo: e.student?.enrollmentNo || 'N/A',
+                department: e.student?.department || 'N/A',
+                scanType: e.scanType,
+                result: e.result,
+                badge: BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
+                gateId: e.gateId,
+                direction: e.metadata?.direction || (e.scanType === 'GATE_ENTRY' ? 'ENTRY' : e.scanType === 'GATE_EXIT' ? 'EXIT' : null)
+            })),
+            total,
+            pages: Math.ceil(total / limit)
+        };
     } catch (err) {
         logger.error('Failed to fetch recent scans:', err);
         throw err;
