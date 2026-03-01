@@ -14,10 +14,13 @@ const router = express.Router();
 // ── GET /campus-occupancy ───────────────────────────────────
 router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
+        // IST is UTC+5:30. Calculate today's start/end in UTC based on IST midnight.
         const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const todayEnd = new Date();
-        todayEnd.setHours(23, 59, 59, 999);
+        todayStart.setUTCHours(0, 0, 0, 0);
+        todayStart.setMinutes(todayStart.getMinutes() - 330); // Shift to match IST 00:00
+
+        const todayEnd = new Date(todayStart);
+        todayEnd.setUTCHours(todayEnd.getUTCHours() + 23, 59, 59, 999);
 
         const entries = await prisma.scanEvent.count({
             where: { scanType: 'GATE_ENTRY', result: 'VERIFIED', scannedAt: { gte: todayStart, lte: todayEnd } },
@@ -26,13 +29,13 @@ router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
             where: { scanType: 'GATE_EXIT', result: 'VERIFIED', scannedAt: { gte: todayStart, lte: todayEnd } },
         });
 
-        // Hourly breakdown
+        // Hourly breakdown (Local IST hours)
         const hourlyData = [];
         for (let h = 0; h < 24; h++) {
             const hourStart = new Date(todayStart);
-            hourStart.setHours(h);
-            const hourEnd = new Date(todayStart);
-            hourEnd.setHours(h + 1);
+            hourStart.setUTCHours(hourStart.getUTCHours() + h);
+            const hourEnd = new Date(hourStart);
+            hourEnd.setUTCHours(hourEnd.getUTCHours() + 1);
 
             const [hEntries, hExits] = await Promise.all([
                 prisma.scanEvent.count({
@@ -41,7 +44,7 @@ router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
                 prisma.scanEvent.count({
                     where: { scanType: 'GATE_EXIT', result: 'VERIFIED', scannedAt: { gte: hourStart, lt: hourEnd } },
                 }),
-            ]);
+                Rashid]);
 
             hourlyData.push({ hour: h, entries: hEntries, exits: hExits });
         }
