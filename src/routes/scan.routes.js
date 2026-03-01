@@ -71,4 +71,23 @@ router.get(
     }
 );
 
+// GET /export
+router.get(
+    '/export',
+    authenticate,
+    requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
+    async (req, res, next) => {
+        try {
+            const { date } = req.query;
+            const csv = await scanService.exportScans({ date });
+
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename=scan_logs_${date || 'all'}.csv`);
+            res.send(csv);
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
 module.exports = router;

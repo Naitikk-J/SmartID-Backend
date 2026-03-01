@@ -509,4 +509,57 @@ async function getRecentScans({ date, page = 1, limit = 50 }) {
     }
 }
 
-module.exports = { verifyScan, getRecentScans };
+/**
+ * Export scans for a specific date as CSV data.
+ */
+async function exportScans({ date }) {
+    try {
+        const where = {};
+        if (date) {
+            const start = new Date(date);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(date);
+            end.setHours(23, 59, 59, 999);
+            where.scannedAt = { gte: start, lte: end };
+        }
+
+        const events = await prisma.scanEvent.findMany({
+            where,
+            orderBy: { scannedAt: 'asc' },
+            include: {
+                student: {
+                    select: {
+                        fullName: true,
+                        enrollmentNo: true,
+                        department: true,
+                    }
+                },
+                card: {
+                    select: {
+                        status: true,
+                    }
+                }
+            }
+        });
+
+        // Generate CSV
+        const headers = ['Time', 'Enrollment No', 'Student Name', 'Department', 'Scan Type', 'Direction', 'Result', 'Badge'];
+        const rows = events.map(e => [
+            new Date(e.scannedAt).toLocaleTimeString([], { hour12: false }),
+            e.student?.enrollmentNo || 'N/A',
+            `"${e.student?.fullName || 'Unknown'}"`,
+            e.student?.department || 'N/A',
+            e.scanType,
+            e.metadata?.direction || (e.scanType === 'GATE_ENTRY' ? 'ENTRY' : e.scanType === 'GATE_EXIT' ? 'EXIT' : 'N/A'),
+            e.result,
+            BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY')
+        ]);
+
+        return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    } catch (err) {
+        logger.error('Failed to export scans:', err);
+        throw err;
+    }
+}
+
+module.exports = { verifyScan, getRecentScans, exportScans };
