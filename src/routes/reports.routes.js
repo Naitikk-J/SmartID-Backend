@@ -44,7 +44,7 @@ router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
                 prisma.scanEvent.count({
                     where: { scanType: 'GATE_EXIT', result: 'VERIFIED', scannedAt: { gte: hourStart, lt: hourEnd } },
                 }),
-                Rashid]);
+            ]);
 
             hourlyData.push({ hour: h, entries: hEntries, exits: hExits });
         }
