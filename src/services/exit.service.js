@@ -114,6 +114,21 @@ async function countExitsToday(studentId, today) {
         },
     });
 }
+async function countEntriesToday(studentId, today) {
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    return prisma.exitEvent.count({
+        where: {
+            studentId,
+            direction: 'ENTRY',
+            eventDate: {
+                gte: today,
+                lt: tomorrow,
+            },
+        },
+    });
+}
 
 /**
  * Record an exit/entry event.
@@ -252,4 +267,5 @@ module.exports = {
     getExitRulesGrid,
     getExitHistory,
     countExitsToday,
+    countEntriesToday,
 };

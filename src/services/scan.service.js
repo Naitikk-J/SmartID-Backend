@@ -185,7 +185,29 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                     });
                 }
 
+                const todayStart = new Date();
+                todayStart.setHours(0, 0, 0, 0);
+                const entryCount = await exitService.countEntriesToday(student.id, todayStart);
+
                 await exitService.recordExitEvent(student.id, gateId, 'ENTRY', operatorId);
+
+                if (entryCount > 0) {
+                    const reentryResult = `REENTERED_${entryCount + 1}`;
+                    const scanEvent = await logScanEvent({
+                        studentId: student.id,
+                        cardId: card.id,
+                        scannedById: operatorId,
+                        scanType,
+                        gateId,
+                        gpsLat,
+                        gpsLng,
+                        result: reentryResult,
+                    });
+
+                    const result = buildResult(reentryResult, student, scanEvent);
+                    emitScanEvent({ scanEvent, student, scanType, result: reentryResult });
+                    return result;
+                }
                 break;
             }
 
@@ -401,9 +423,12 @@ async function logScanEvent({ studentId, cardId, scannedById, scanType, gateId, 
 
 function buildResult(result, student, scanEvent, extra = {}) {
     const safeExtra = extra || {};
+    const isReentry = result.startsWith('REENTERED_');
+    const badgeCode = isReentry ? 'GREEN' : (BADGE_MAP[result] || 'GREY');
+
     return {
         result,
-        badge: BADGE_MAP[result] || 'GREY',
+        badge: badgeCode,
         student: student
             ? {
                 id: student.id,
