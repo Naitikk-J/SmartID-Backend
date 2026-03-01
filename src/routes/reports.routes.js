@@ -55,6 +55,41 @@ router.get('/campus-occupancy', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
     }
 });
 
+// ── GET /entry-summary ──────────────────────────────────────
+router.get('/entry-summary', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
+    try {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        const entries = await prisma.scanEvent.findMany({
+            where: {
+                scanType: 'GATE_ENTRY',
+                result: { startsWith: 'VERIFIED' }, // Matches VERIFIED and REENTERED_N
+                scannedAt: { gte: todayStart, lte: todayEnd }
+            },
+            select: {
+                student: {
+                    select: { department: true }
+                }
+            }
+        });
+
+        // Group by department
+        const summary = {};
+        for (const entry of entries) {
+            const dept = entry.student?.department || 'Unknown';
+            if (!summary[dept]) summary[dept] = 0;
+            summary[dept]++;
+        }
+
+        res.json({ success: true, data: { summary } });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── GET /attendance-summary ─────────────────────────────────
 router.get('/attendance-summary', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
