@@ -356,14 +356,17 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
         });
 
         // ─────────────────────────────────────────────────────────
-        // Step 5: Emit real-time event to dashboard
+        // Step 6: Return result (Priority)
         // ─────────────────────────────────────────────────────────
-        emitScanEvent({ scanEvent, student, scanType, result: 'VERIFIED' });
+        const result = buildResult('VERIFIED', student, scanEvent, exitInfo);
 
         // ─────────────────────────────────────────────────────────
-        // Step 6: Return result
+        // Step 5: Emit real-time event to dashboard (Background)
         // ─────────────────────────────────────────────────────────
-        return buildResult('VERIFIED', student, scanEvent, exitInfo);
+        // We do this just before returning but technically it's fine here
+        emitScanEvent({ scanEvent, student, scanType, result: 'VERIFIED' });
+
+        return result;
 
     } catch (err) {
         logger.error('CRITICAL scan failure:', { error: err?.message, stack: err?.stack });
