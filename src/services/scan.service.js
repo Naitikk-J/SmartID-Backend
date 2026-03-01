@@ -82,6 +82,12 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
 
         const student = card.student;
 
+        // ─────────────────────────────────────────────────────────
+        // Step 2.5: Common state for gates/mess
+        // ─────────────────────────────────────────────────────────
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
         // Card status checks
         if (card.status === 'LOST') {
             const event = await logScanEvent({
@@ -158,8 +164,6 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
 
             case 'GATE_ENTRY': {
                 // Check if already on campus (last event was ENTRY)
-                const todayStart = new Date();
-                todayStart.setHours(0, 0, 0, 0);
 
                 const lastEvent = await prisma.exitEvent.findFirst({
                     where: {
@@ -185,8 +189,6 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                     });
                 }
 
-                const todayStart = new Date();
-                todayStart.setHours(0, 0, 0, 0);
                 const entryCount = await exitService.countEntriesToday(student.id, todayStart);
 
                 await exitService.recordExitEvent(student.id, gateId, 'ENTRY', operatorId);
@@ -276,8 +278,6 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
 
             case 'MESS': {
                 // Check student hasn't already scanned MESS today
-                const todayStart = new Date();
-                todayStart.setHours(0, 0, 0, 0);
                 const todayEnd = new Date();
                 todayEnd.setHours(23, 59, 59, 999);
 
