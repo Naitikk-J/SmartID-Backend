@@ -32,6 +32,7 @@ app.use(helmet({
 // ── 2. CORS ──────────────────────────────────────────────────
 const allowedOrigins = [
     'http://localhost:5173',
+    'https://smart-id-frontend-seven.vercel.app'
 ];
 
 // Add from env if present
@@ -48,8 +49,11 @@ app.use(cors({
     origin: (origin, callback) => {
         // Allow requests with no origin (e.g. mobile apps, curl, Postman)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin)) return callback(null, true);
-        callback(new Error(`CORS: origin '${origin}' not allowed`));
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        // Instead of throwing an error, just return false
+        callback(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
