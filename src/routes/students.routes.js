@@ -84,9 +84,6 @@ router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createStuden
     try {
         const student = await prisma.student.create({ data: req.body });
 
-        // Auto-create wallet
-        await prisma.wallet.create({ data: { studentId: student.id, balance: 0 } });
-
         // Auto-create card
         const cardUid = generateCardUid();
         const qrToken = encryptToken({ enrollmentNo: student.enrollmentNo, cardId: cardUid });
@@ -138,8 +135,7 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
                     },
                 });
 
-                // Create wallet and card
-                await prisma.wallet.create({ data: { studentId: student.id, balance: 0 } });
+                // Create card
                 const cardUid = generateCardUid();
                 const qrToken = encryptToken({ enrollmentNo: student.enrollmentNo, cardId: cardUid });
                 await prisma.card.create({
@@ -169,7 +165,6 @@ router.get('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'SECURITY_GUA
             where: { id: req.params.id },
             include: {
                 cards: true,
-                wallet: true,
             },
         });
         if (!student) throw new AppError('Student not found', 404);

@@ -216,13 +216,6 @@ router.post('/custom', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (r
                         }),
                     };
                     break;
-                case 'Canteen Revenue':
-                    const debits = await prisma.walletTransaction.aggregate({
-                        where: { type: 'DEBIT', createdAt: { gte: startDate, lte: endDate } },
-                        _sum: { amount: true },
-                    });
-                    report.canteenRevenue = parseFloat(debits._sum.amount || 0);
-                    break;
                 case 'Exit Violations':
                     report.exitViolations = await prisma.scanEvent.count({
                         where: { result: 'LIMIT_HIT', scannedAt: { gte: startDate, lte: endDate } },

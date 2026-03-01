@@ -15,8 +15,6 @@ async function main() {
     await prisma.vote.deleteMany({});
     await prisma.libraryTransaction.deleteMany({});
     await prisma.book.deleteMany({});
-    await prisma.walletTransaction.deleteMany({});
-    await prisma.wallet.deleteMany({});
     await prisma.attendanceRecord.deleteMany({});
     await prisma.attendanceSession.deleteMany({});
     await prisma.timetableSlot.deleteMany({});
@@ -65,7 +63,7 @@ async function main() {
     }
     console.log('📜 Exit rules created.');
 
-    // 5. Sample Students with Cards & Wallets
+    // 5. Sample Students with Cards
     const students = [
         { enrollment: '0101CS221001', name: 'Naitik Varshney', type: 'DAY_SCHOLAR', dept: 'CSE' },
         { enrollment: '0101CS221002', name: 'Ananya Sharma', type: 'HOSTELLER_GIRLS', dept: 'CSE' },
@@ -81,7 +79,6 @@ async function main() {
                 studentType: s.type,
                 department: s.dept,
                 year: 2,
-                wallet: { create: { balance: 1000 } },
                 cards: {
                     create: {
                         cardUid: `CARD_${s.enrollment}`,

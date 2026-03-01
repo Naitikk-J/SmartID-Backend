@@ -52,9 +52,6 @@ enum AttendanceSessionStatus {
   CLOSED
 }
 
-enum WalletTxnType {
-  TOPUP
-  DEBIT
 }
 
 enum ExitDirection {
@@ -95,7 +92,6 @@ model Student {
   attendanceRecords    AttendanceRecord[]
   scanEvents           ScanEvent[]
   exitEvents           ExitEvent[]
-  wallet               Wallet?
   libraryTransactions  LibraryTransaction[]
   votes                Vote[]
 
@@ -300,30 +296,7 @@ model AttendanceRecord {
   @@map("attendance_records")
 }
 
-model Wallet {
-  id          String     @id @default(auto()) @map("_id") @db.ObjectId
-  studentId   String     @unique @db.ObjectId
-  balance     Float      @default(0)
-  updatedAt   DateTime   @updatedAt
-
-  student     Student    @relation(fields: [studentId], references: [id])
-  transactions WalletTransaction[]
-
-  @@map("wallets")
-}
-
-model WalletTransaction {
-  id           String        @id @default(auto()) @map("_id") @db.ObjectId
-  walletId     String        @db.ObjectId
-  type         WalletTxnType
-  amount       Float
-  balanceAfter Float
-  note         String?
-  createdAt    DateTime      @default(now())
-
-  wallet       Wallet        @relation(fields: [walletId], references: [id])
-
-  @@map("wallet_transactions")
+  @@map("votes")
 }
 
 model Book {
