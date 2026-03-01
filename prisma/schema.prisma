@@ -52,8 +52,6 @@ enum AttendanceSessionStatus {
   CLOSED
 }
 
-}
-
 enum ExitDirection {
   EXIT
   ENTRY
@@ -294,9 +292,6 @@ model AttendanceRecord {
 
   @@unique([sessionId, studentId])
   @@map("attendance_records")
-}
-
-  @@map("votes")
 }
 
 model Book {
