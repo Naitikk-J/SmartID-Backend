@@ -151,7 +151,7 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                         message: exitCheck.reason,
                     });
                 }
-                await exitService.recordExitEvent(student.id, gateId, 'EXIT');
+                await exitService.recordExitEvent(student.id, gateId, 'EXIT', operatorId);
                 exitInfo = { exitsUsedToday: exitCheck.used + 1, exitsAllowedToday: exitCheck.max };
                 break;
             }
@@ -185,7 +185,7 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                     });
                 }
 
-                await exitService.recordExitEvent(student.id, gateId, 'ENTRY');
+                await exitService.recordExitEvent(student.id, gateId, 'ENTRY', operatorId);
                 break;
             }
 

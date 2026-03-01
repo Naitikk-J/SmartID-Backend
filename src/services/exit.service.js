@@ -118,7 +118,7 @@ async function countExitsToday(studentId, today) {
 /**
  * Record an exit/entry event.
  */
-async function recordExitEvent(studentId, gateId, direction = 'EXIT') {
+async function recordExitEvent(studentId, gateId, direction = 'EXIT', actorId = null) {
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
 
@@ -140,15 +140,35 @@ async function recordExitEvent(studentId, gateId, direction = 'EXIT') {
         finalGateId = gate?.id || null;
     }
 
-    return prisma.exitEvent.create({
+    const event = await prisma.exitEvent.create({
         data: {
             student: { connect: { id: studentId } },
             direction,
             eventDate: new Date(todayStr),
             eventTime: now,
             ...(finalGateId && { gate: { connect: { id: finalGateId } } }),
+            ...(actorId && { overrideBy: { connect: { id: actorId } } }),
         },
     });
+
+    // Create Audit Log for traceability
+    if (actorId) {
+        await prisma.auditLog.create({
+            data: {
+                actorId: actorId,
+                action: direction === 'EXIT' ? 'CAMPUS_EXIT' : 'CAMPUS_ENTRY',
+                entity: 'Student',
+                entityId: studentId,
+                newValue: {
+                    gateId: finalGateId,
+                    direction,
+                    eventId: event.id
+                }
+            }
+        });
+    }
+
+    return event;
 }
 
 /**

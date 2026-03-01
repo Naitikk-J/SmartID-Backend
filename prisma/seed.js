@@ -57,7 +57,7 @@ async function main() {
                 data: {
                     studentType: type,
                     dayOfWeek: day,
-                    maxExits: type === 'DAY_SCHOLAR' ? -1 : 1, // -1 = Unlimited
+                    maxExits: type === 'DAY_SCHOLAR' ? -1 : 2, // -1 = Unlimited, Hostellers = 2
                     updatedById: admin.id,
                 },
             });
