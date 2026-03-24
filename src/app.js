@@ -11,13 +11,13 @@ const logger = require('./config/logger');
 const { errorHandler, AppError } = require('./middleware/errorHandler');
 
 // ── Route imports ────────────────────────────────────────────
-function loadRoute(routeName, loadModule) {
+function loadRoute(routeName, modulePath) {
     try {
-        return loadModule();
+        return require(modulePath);
     } catch (err) {
         logger.error(`Failed to load route module: ${routeName}`, {
             routeName,
-            modulePath: typeof loadModule === 'function' ? loadModule.name || 'inline-loader' : 'unknown',
+            modulePath,
             error: err.message,
             stack: err.stack,
         });
@@ -27,24 +27,25 @@ function loadRoute(routeName, loadModule) {
             res.status(503).json({
                 success: false,
                 error: `${routeName} route is temporarily unavailable`,
+                debug: err.message,
             });
         });
         return fallback;
     }
 }
 
-const authRoutes = loadRoute('auth', function loadAuthRoute() { return require('./routes/auth.routes'); });
-const scanRoutes = loadRoute('scan', function loadScanRoute() { return require('./routes/scan.routes'); });
-const studentRoutes = loadRoute('students', function loadStudentsRoute() { return require('./routes/students.routes'); });
-const attendanceRoutes = loadRoute('attendance', function loadAttendanceRoute() { return require('./routes/attendance.routes'); });
-const gateRoutes = loadRoute('gates', function loadGatesRoute() { return require('./routes/gates.routes'); });
-const eventRoutes = loadRoute('events', function loadEventsRoute() { return require('./routes/events.routes'); });
-const libraryRoutes = loadRoute('library', function loadLibraryRoute() { return require('./routes/library.routes'); });
-const electionRoutes = loadRoute('elections', function loadElectionsRoute() { return require('./routes/elections.routes'); });
-const reportRoutes = loadRoute('reports', function loadReportsRoute() { return require('./routes/reports.routes'); });
-const adminRoutes = loadRoute('admin', function loadAdminRoute() { return require('./routes/admin.routes'); });
-const accessRoutes = loadRoute('access', function loadAccessRoute() { return require('./routes/access.routes'); });
-const qrRoutes = loadRoute('qr', function loadQrRoute() { return require('./routes/qr.routes'); });
+const authRoutes = loadRoute('auth', './routes/auth.routes');
+const scanRoutes = loadRoute('scan', './routes/scan.routes');
+const studentRoutes = loadRoute('students', './routes/students.routes');
+const attendanceRoutes = loadRoute('attendance', './routes/attendance.routes');
+const gateRoutes = loadRoute('gates', './routes/gates.routes');
+const eventRoutes = loadRoute('events', './routes/events.routes');
+const libraryRoutes = loadRoute('library', './routes/library.routes');
+const electionRoutes = loadRoute('elections', './routes/elections.routes');
+const reportRoutes = loadRoute('reports', './routes/reports.routes');
+const adminRoutes = loadRoute('admin', './routes/admin.routes');
+const accessRoutes = loadRoute('access', './routes/access.routes');
+const qrRoutes = loadRoute('qr', './routes/qr.routes');
 
 const app = express();
 
