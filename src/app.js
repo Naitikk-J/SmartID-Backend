@@ -11,41 +11,49 @@ const logger = require('./config/logger');
 const { errorHandler, AppError } = require('./middleware/errorHandler');
 
 // ── Route imports ────────────────────────────────────────────
-function loadRoute(routeName, modulePath) {
-    try {
-        return require(modulePath);
-    } catch (err) {
-        logger.error(`Failed to load route module: ${routeName}`, {
-            routeName,
-            modulePath,
-            error: err.message,
-            stack: err.stack,
-        });
+function routeFallback(routeName, err) {
+    logger.error(`Failed to load route module: ${routeName}`, {
+        routeName,
+        error: err.message,
+        stack: err.stack,
+    });
 
-        const fallback = express.Router();
-        fallback.all('*', (req, res) => {
-            res.status(503).json({
-                success: false,
-                error: `${routeName} route is temporarily unavailable`,
-                debug: err.message,
-            });
+    const fallback = express.Router();
+    fallback.all('*', (req, res) => {
+        res.status(503).json({
+            success: false,
+            error: `${routeName} route is temporarily unavailable`,
+            debug: err.message,
         });
-        return fallback;
-    }
+    });
+    return fallback;
 }
 
-const authRoutes = loadRoute('auth', './routes/auth.routes');
-const scanRoutes = loadRoute('scan', './routes/scan.routes');
-const studentRoutes = loadRoute('students', './routes/students.routes');
-const attendanceRoutes = loadRoute('attendance', './routes/attendance.routes');
-const gateRoutes = loadRoute('gates', './routes/gates.routes');
-const eventRoutes = loadRoute('events', './routes/events.routes');
-const libraryRoutes = loadRoute('library', './routes/library.routes');
-const electionRoutes = loadRoute('elections', './routes/elections.routes');
-const reportRoutes = loadRoute('reports', './routes/reports.routes');
-const adminRoutes = loadRoute('admin', './routes/admin.routes');
-const accessRoutes = loadRoute('access', './routes/access.routes');
-const qrRoutes = loadRoute('qr', './routes/qr.routes');
+let authRoutes;
+let scanRoutes;
+let studentRoutes;
+let attendanceRoutes;
+let gateRoutes;
+let eventRoutes;
+let libraryRoutes;
+let electionRoutes;
+let reportRoutes;
+let adminRoutes;
+let accessRoutes;
+let qrRoutes;
+
+try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
+try { scanRoutes = require('./routes/scan.routes'); } catch (err) { scanRoutes = routeFallback('scan', err); }
+try { studentRoutes = require('./routes/students.routes'); } catch (err) { studentRoutes = routeFallback('students', err); }
+try { attendanceRoutes = require('./routes/attendance.routes'); } catch (err) { attendanceRoutes = routeFallback('attendance', err); }
+try { gateRoutes = require('./routes/gates.routes'); } catch (err) { gateRoutes = routeFallback('gates', err); }
+try { eventRoutes = require('./routes/events.routes'); } catch (err) { eventRoutes = routeFallback('events', err); }
+try { libraryRoutes = require('./routes/library.routes'); } catch (err) { libraryRoutes = routeFallback('library', err); }
+try { electionRoutes = require('./routes/elections.routes'); } catch (err) { electionRoutes = routeFallback('elections', err); }
+try { reportRoutes = require('./routes/reports.routes'); } catch (err) { reportRoutes = routeFallback('reports', err); }
+try { adminRoutes = require('./routes/admin.routes'); } catch (err) { adminRoutes = routeFallback('admin', err); }
+try { accessRoutes = require('./routes/access.routes'); } catch (err) { accessRoutes = routeFallback('access', err); }
+try { qrRoutes = require('./routes/qr.routes'); } catch (err) { qrRoutes = routeFallback('qr', err); }
 
 const app = express();
 
