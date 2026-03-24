@@ -7,7 +7,20 @@ const config = require('../config/env');
 const prisma = require('../config/database');
 
 const router = express.Router();
-const redis = new Redis(config.REDIS_URL);
+
+// Lazy-load Redis to prevent module load failures
+let redis = null;
+function getRedis() {
+    if (!redis) {
+        try {
+            redis = new Redis(config.REDIS_URL);
+        } catch (err) {
+            console.warn('Redis connection failed, QR operations may be limited', err.message);
+            redis = null;
+        }
+    }
+    return redis;
+}
 const QR_TTL_SECONDS = 10;
 
 async function resolveGate(gateRef) {
@@ -41,12 +54,15 @@ router.get(
 
             const token = crypto.randomBytes(24).toString('hex');
             const expiresAt = new Date(Date.now() + (QR_TTL_SECONDS * 1000));
-            await redis.set(
-                `qr:dynamic:${token}`,
-                JSON.stringify({ gateId: gate.id, gateName: gate.name, expiresAt: expiresAt.toISOString() }),
-                'EX',
-                QR_TTL_SECONDS,
-            );
+            const redisClient = getRedis();
+            if (redisClient) {
+                await redisClient.set(
+                    `qr:dynamic:${token}`,
+                    JSON.stringify({ gateId: gate.id, gateName: gate.name, expiresAt: expiresAt.toISOString() }),
+                    'EX',
+                    QR_TTL_SECONDS,
+                );
+            }
 
             return res.json({
                 success: true,
