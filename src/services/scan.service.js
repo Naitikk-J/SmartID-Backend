@@ -450,7 +450,7 @@ function buildResult(result, student, scanEvent, extra = {}) {
 /**
  * Get recent scans for the dashboard live feed.
  */
-async function getRecentScans({ date, page = 1, limit = 50 }) {
+async function getRecentScans({ date, page = 1, limit = 50, direction, search, studentType }) {
     try {
         const where = {};
 
@@ -462,6 +462,34 @@ async function getRecentScans({ date, page = 1, limit = 50 }) {
             where.scannedAt = { gte: start, lte: end };
         }
 
+        if (direction && ['ENTRY', 'EXIT'].includes(String(direction).toUpperCase())) {
+            where.scanType = String(direction).toUpperCase() === 'ENTRY' ? 'GATE_ENTRY' : 'GATE_EXIT';
+        }
+
+        const normalizedStudentType = String(studentType || '').toUpperCase();
+        if (normalizedStudentType === 'HOSTELLER') {
+            where.student = {
+                studentType: { in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'] },
+            };
+        } else if (['HOSTELLER_BOYS', 'HOSTELLER_GIRLS', 'DAY_SCHOLAR'].includes(normalizedStudentType)) {
+            where.student = {
+                studentType: normalizedStudentType,
+            };
+        }
+
+        if (search) {
+            const term = String(search).trim();
+            if (term) {
+                where.student = {
+                    ...(where.student || {}),
+                    OR: [
+                        { fullName: { contains: term, mode: 'insensitive' } },
+                        { enrollmentNo: { contains: term, mode: 'insensitive' } },
+                    ],
+                };
+            }
+        }
+
         const [events, total] = await Promise.all([
             prisma.scanEvent.findMany({
                 where,
@@ -471,10 +499,12 @@ async function getRecentScans({ date, page = 1, limit = 50 }) {
                 include: {
                     student: {
                         select: {
+                            id: true,
                             fullName: true,
                             enrollmentNo: true,
                             department: true,
                             photoUrl: true,
+                            studentType: true,
                         }
                     },
                     card: {
@@ -493,6 +523,7 @@ async function getRecentScans({ date, page = 1, limit = 50 }) {
                 time: e.scannedAt,
                 studentName: e.student?.fullName || 'Unknown',
                 enrollmentNo: e.student?.enrollmentNo || 'N/A',
+                studentType: e.student?.studentType || null,
                 department: e.student?.department || 'N/A',
                 scanType: e.scanType,
                 result: e.result,

@@ -21,6 +21,8 @@ const libraryRoutes = require('./routes/library.routes');
 const electionRoutes = require('./routes/elections.routes');
 const reportRoutes = require('./routes/reports.routes');
 const adminRoutes = require('./routes/admin.routes');
+const accessRoutes = require('./routes/access.routes');
+const qrRoutes = require('./routes/qr.routes');
 
 const app = express();
 
@@ -61,8 +63,8 @@ app.use(cors({
 }));
 
 // ── 3. Body parsing ─────────────────────────────────────────
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: false, limit: '25mb' }));
 
 // ── 4. Request ID ───────────────────────────────────────────
 app.use((req, res, next) => {
@@ -103,6 +105,8 @@ app.use('/api/v1/library', libraryRoutes);
 app.use('/api/v1/elections', electionRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/access', accessRoutes);
+app.use('/api/v1/qr', qrRoutes);
 
 // ── 8. 404 handler ──────────────────────────────────────────
 app.all('*', (req, res, next) => {

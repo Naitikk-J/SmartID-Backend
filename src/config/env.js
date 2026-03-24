@@ -38,6 +38,10 @@ const envSchema = z.object({
     // CORS — comma-separated list of allowed origins
     DASHBOARD_URL: z.string().default('http://localhost:5173'),
 
+    // Python Face AI service
+    FACE_AI_URL: z.string().default('http://localhost:8001'),
+    FACE_AI_TIMEOUT_MS: z.coerce.number().default(10000),
+
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),
 });

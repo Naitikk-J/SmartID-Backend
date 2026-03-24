@@ -17,6 +17,9 @@ const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
+const HARD_CODED_TEST_STUDENT_EMAIL = 'student.test@mits.local';
+const HARD_CODED_TEST_STUDENT_PASSWORD = 'Student@123';
+
 // ── Validation schemas ───────────────────────────────────────
 const loginSchema = z.object({
     email: z.string().email('Valid email required'),
@@ -47,6 +50,56 @@ function generateTokens(user) {
 router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, next) => {
     try {
         const { email, password } = req.body;
+
+        // Testing shortcut: allow a fixed student-style login in non-production.
+        // We provision/update a real admin user record so downstream role-protected APIs keep working.
+        if (
+            config.NODE_ENV !== 'production'
+            && email === HARD_CODED_TEST_STUDENT_EMAIL
+            && password === HARD_CODED_TEST_STUDENT_PASSWORD
+        ) {
+            const passwordHash = await bcrypt.hash(HARD_CODED_TEST_STUDENT_PASSWORD, 12);
+            const user = await prisma.adminUser.upsert({
+                where: { email: HARD_CODED_TEST_STUDENT_EMAIL },
+                update: {
+                    name: 'Test Student User',
+                    passwordHash,
+                    role: 'FACULTY',
+                    department: 'CSE',
+                    module: null,
+                    isActive: true,
+                    lastLogin: new Date(),
+                },
+                create: {
+                    name: 'Test Student User',
+                    email: HARD_CODED_TEST_STUDENT_EMAIL,
+                    passwordHash,
+                    role: 'FACULTY',
+                    department: 'CSE',
+                    module: null,
+                    isActive: true,
+                    lastLogin: new Date(),
+                },
+            });
+
+            const tokens = generateTokens(user);
+            return res.json({
+                success: true,
+                data: {
+                    ...tokens,
+                    user: {
+                        id: user.id,
+                        name: user.name,
+                        email: user.email,
+                        role: user.role,
+                        department: user.department,
+                        module: user.module,
+                        gateId: user.gateId,
+                        testUser: true,
+                    },
+                },
+            });
+        }
 
         const user = await prisma.adminUser.findUnique({ where: { email } });
         if (!user) {

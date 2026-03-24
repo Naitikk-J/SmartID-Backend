@@ -12,6 +12,7 @@ const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
 const { encryptToken, generateCardUid } = require('../services/crypto.service');
 const { logAction } = require('../services/audit.service');
+const faceAiService = require('../services/faceAi.service');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -330,6 +331,106 @@ router.patch('/:id/health', authenticate, requireModule('HEALTH'), async (req, r
             data: { bloodGroup, allergies, conditions, emergencyName, emergencyPhone },
         });
         res.json({ success: true, data: { health: student } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── POST /:id/face-register — Register face embeddings ────────────
+const faceRegisterSchema = z.object({
+    faceImages: z.array(z.string()).min(10, 'Minimum 10 face captures required'),
+    timestamp: z.string().datetime().optional(),
+});
+
+router.post('/:id/face-register', authenticate, validate(faceRegisterSchema), async (req, res, next) => {
+    try {
+        const studentId = req.params.id;
+        const { faceImages, timestamp } = req.body;
+
+        // Verify student exists
+        const student = await prisma.student.findUnique({ where: { id: studentId } });
+        if (!student) throw new AppError('Student not found', 404);
+
+        // Check if face data already exists
+        let faceData = await prisma.faceData.findUnique({ where: { studentId } });
+
+        const captures = faceImages.slice(0, 10);
+
+        let extraction;
+        try {
+            extraction = await faceAiService.extractBatchDescriptor(captures);
+        } catch (error) {
+            if (error.status === 422) {
+                throw new AppError('No valid live face detected. Ensure face is clear, centered, and not spoofed.', 422);
+            }
+            throw new AppError('Face AI service unavailable. Start Python face service and try again.', 503);
+        }
+
+        if (extraction?.isLive === false) {
+            throw new AppError('Anti-spoofing check failed during enrollment. Please retry with a real live face.', 422);
+        }
+
+        const allDescriptors = Array.isArray(extraction?.descriptors)
+            ? extraction.descriptors.filter((descriptor) => Array.isArray(descriptor) && descriptor.length >= 128)
+            : [];
+
+        const liveIndexes = Array.isArray(extraction?.liveDescriptorIndexes)
+            ? extraction.liveDescriptorIndexes
+            : [];
+
+        const liveDescriptors = liveIndexes
+            .map((index) => allDescriptors[index])
+            .filter(Boolean);
+
+        const selectedDescriptors = (liveDescriptors.length > 0 ? liveDescriptors : allDescriptors).slice(0, 10);
+        const embeddingDimension = selectedDescriptors[0]?.length || 0;
+
+        if (embeddingDimension < 128 || selectedDescriptors.some((descriptor) => descriptor.length !== embeddingDimension)) {
+            throw new AppError('Face descriptor extraction failed', 422);
+        }
+
+        const faceEmbeddings = selectedDescriptors.flat();
+
+        const qualityScore = Number(extraction?.qualityScore || 0);
+
+        if (faceData) {
+            // Update existing face data
+            faceData = await prisma.faceData.update({
+                where: { studentId },
+                data: {
+                    faceImages: captures,
+                    faceEmbeddings,
+                    qualityScore,
+                    isActive: true,
+                    updatedAt: new Date(),
+                },
+            });
+        } else {
+            // Create new face data
+            faceData = await prisma.faceData.create({
+                data: {
+                    studentId,
+                    faceImages: captures,
+                    faceEmbeddings,
+                    qualityScore,
+                    enrolledBy: req.user?.id,
+                    enrolledAt: timestamp ? new Date(timestamp) : new Date(),
+                    isActive: true,
+                },
+            });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                faceData: {
+                    studentId: faceData.studentId,
+                    enrolledAt: faceData.enrolledAt,
+                    qualityScore: Math.round(faceData.qualityScore),
+                    captureCount: faceData.faceImages?.length || 0,
+                },
+            },
+        });
     } catch (err) {
         next(err);
     }

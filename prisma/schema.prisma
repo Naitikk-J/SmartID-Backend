@@ -92,6 +92,8 @@ model Student {
   exitEvents           ExitEvent[]
   libraryTransactions  LibraryTransaction[]
   votes                Vote[]
+  faceData             FaceData?
+  faceDetectionLogs    FaceDetectionLog[]
 
   @@map("students")
 }
@@ -366,4 +368,35 @@ model AuditLog {
   actor       AdminUser @relation(fields: [actorId], references: [id])
 
   @@map("audit_logs")
+}
+
+model FaceData {
+  id              String       @id @default(auto()) @map("_id") @db.ObjectId
+  studentId       String       @unique @db.ObjectId
+  faceEmbeddings  Float[]      // Array of 128-dimensional face embeddings (flattened from multiple captures)
+  faceImages      String[]     // Base64-encoded face capture images (max 3)
+  qualityScore    Float        // Average quality across all captures (0-100)
+  enrolledAt      DateTime     @default(now())
+  enrolledBy      String?      @db.ObjectId // AdminUser who registered the face
+  lastMatchedAt   DateTime?
+  matchCount      Int          @default(0)
+  isActive        Boolean      @default(true)
+  updatedAt       DateTime     @updatedAt
+
+  student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("face_data")
+}
+
+model FaceDetectionLog {
+  id              String       @id @default(auto()) @map("_id") @db.ObjectId
+  studentId       String       @db.ObjectId
+  direction       String       // ENTRY or EXIT
+  confidence      Float        // Match confidence percentage (0-100)
+  timestamp       DateTime     @default(now())
+  source          String?      // Camera or gate ID
+
+  student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("face_detection_logs")
 }
