@@ -11,15 +11,39 @@ const logger = require('./config/logger');
 const { PrismaClient } = require('@prisma/client');
 const Redis = require('ioredis');
 
-// ── Prisma Client (singleton) ───────────────────────────────
-const prisma = new PrismaClient();
-module.exports.prisma = prisma;
+// ── Prisma Client (singleton, lazy-loaded) ────────────────
+let prismaInstance = null;
+function getPrismaForSocket() {
+    if (!prismaInstance) {
+        try {
+            prismaInstance = new PrismaClient();
+        } catch (err) {
+            logger.error('Failed to initialize Prisma for socket:', err);
+            prismaInstance = null;
+        }
+    }
+    return prismaInstance;
+}
+module.exports.prisma = null; // Will use getPrismaForSocket when needed
 
-// ── Redis Client (singleton) ────────────────────────────────
-const redis = new Redis(config.REDIS_URL);
-redis.on('error', (err) => logger.error('Redis error:', err));
-redis.on('connect', () => logger.info('Redis connected'));
-module.exports.redis = redis;
+// ── Redis Client (singleton, lazy-loaded) ──────────────────
+let redisInstance = null;
+function getRedisForSocket() {
+    if (!redisInstance) {
+        try {
+            redisInstance = new Redis(config.REDIS_URL);
+            redisInstance.on('error', (err) => logger.error('Redis error:', err));
+            redisInstance.on('connect', () => logger.info('Redis connected'));
+        } catch (err) {
+            logger.error('Failed to initialize Redis for socket:', err);
+            redisInstance = null;
+        }
+    }
+    return redisInstance;
+}
+module.exports.redis = null; // Will use getRedisForSocket when needed
+module.exports.getPrisma = getPrismaForSocket;
+module.exports.getRedis = getRedisForSocket;
 
 // ── HTTP Server ─────────────────────────────────────────────
 const server = http.createServer(app);
@@ -81,8 +105,10 @@ server.listen(PORT, () => {
 const gracefulShutdown = async (signal) => {
     logger.info(`${signal} received. Shutting down gracefully...`);
     server.close(async () => {
-        await prisma.$disconnect();
-        await redis.quit();
+        const p = getPrismaForSocket();
+        const r = getRedisForSocket();
+        if (p) await p.$disconnect().catch(err => logger.error('Prisma disconnect error:', err));
+        if (r) await r.quit().catch(err => logger.error('Redis quit error:', err));
         logger.info('Server closed.');
         process.exit(0);
     });

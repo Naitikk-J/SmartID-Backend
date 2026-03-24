@@ -8,21 +8,33 @@ const config = require('../config/env');
 const { AppError } = require('./errorHandler');
 const Redis = require('ioredis');
 
-const redis = new Redis(config.REDIS_URL, {
-    maxRetriesPerRequest: 1,
-    retryStrategy: (times) => {
-        if (times > 3) return null; // stop retrying after 3 attempts
-        return Math.min(times * 50, 2000);
+// Lazy-load Redis to prevent module load failures
+let redis = null;
+function getRedis() {
+    if (!redis) {
+        try {
+            redis = new Redis(config.REDIS_URL, {
+                maxRetriesPerRequest: 1,
+                retryStrategy: (times) => {
+                    if (times > 3) return null;
+                    return Math.min(times * 50, 2000);
+                }
+            });
+
+            redis.on('error', (err) => {
+                console.warn('⚠️ Redis connection error:', err.message);
+            });
+
+            redis.on('connect', () => {
+                console.log('✅ Redis connected');
+            });
+        } catch (err) {
+            console.warn('Redis initialization failed:', err.message);
+            redis = null;
+        }
     }
-});
-
-redis.on('error', (err) => {
-    console.warn('⚠️ Redis connection error:', err.message);
-});
-
-redis.on('connect', () => {
-    console.log('✅ Redis connected');
-});
+    return redis;
+}
 
 /**
  * Authenticate — extracts and verifies JWT from Authorization header.
@@ -41,9 +53,12 @@ const authenticate = async (req, res, next) => {
 
         // Check Redis blacklist (logged-out tokens)
         try {
-            const isBlacklisted = await redis.get(`blacklist:${token}`);
-            if (isBlacklisted) {
-                throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
+            const redisClient = getRedis();
+            if (redisClient) {
+                const isBlacklisted = await redisClient.get(`blacklist:${token}`);
+                if (isBlacklisted) {
+                    throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
+                }
             }
         } catch (redisErr) {
             if (redisErr instanceof AppError) throw redisErr;
