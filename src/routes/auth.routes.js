@@ -30,6 +30,12 @@ const refreshSchema = z.object({
     refreshToken: z.string().min(1, 'Refresh token required'),
 });
 
+function assertAuthRuntimeConfig() {
+    if (!config.DATABASE_URL) {
+        throw new AppError('Authentication service is temporarily unavailable', 503, 'AUTH_CONFIG_MISSING');
+    }
+}
+
 // ── Helper: generate tokens ─────────────────────────────────
 function generateTokens(user) {
     const payload = {
@@ -49,6 +55,7 @@ function generateTokens(user) {
 // ── POST /login ─────────────────────────────────────────────
 router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, next) => {
     try {
+        assertAuthRuntimeConfig();
         const { email, password } = req.body;
 
         // Testing shortcut: allow a fixed student-style login in non-production.
@@ -159,6 +166,7 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
 // ── POST /refresh ───────────────────────────────────────────
 router.post('/refresh', validate(refreshSchema), async (req, res, next) => {
     try {
+        assertAuthRuntimeConfig();
         const { refreshToken } = req.body;
         const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
 
