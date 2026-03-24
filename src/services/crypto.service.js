@@ -7,8 +7,26 @@ const crypto = require('crypto');
 const config = require('../config/env');
 
 const ALGORITHM = 'aes-256-gcm';
-const KEY = Buffer.from(config.AES_KEY, 'hex'); // 32 bytes = 256 bits
-const IV_LENGTH = config.AES_IV_LENGTH; // 16 bytes
+const DEFAULT_AES_KEY_HEX = '0000000000000000000000000000000000000000000000000000000000000000';
+
+function resolveKey() {
+    const candidate = typeof config.AES_KEY === 'string' && config.AES_KEY.trim()
+        ? config.AES_KEY.trim()
+        : DEFAULT_AES_KEY_HEX;
+
+    const normalized = /^[0-9a-fA-F]{64}$/.test(candidate) ? candidate : DEFAULT_AES_KEY_HEX;
+
+    try {
+        return Buffer.from(normalized, 'hex');
+    } catch {
+        return Buffer.from(DEFAULT_AES_KEY_HEX, 'hex');
+    }
+}
+
+const KEY = resolveKey(); // 32 bytes = 256 bits
+const IV_LENGTH = Number.isInteger(config.AES_IV_LENGTH) && config.AES_IV_LENGTH > 0
+    ? config.AES_IV_LENGTH
+    : 16; // 16 bytes
 const AUTH_TAG_LENGTH = 16; // bytes
 
 /**

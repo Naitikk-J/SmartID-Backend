@@ -11,18 +11,40 @@ const logger = require('./config/logger');
 const { errorHandler, AppError } = require('./middleware/errorHandler');
 
 // ── Route imports ────────────────────────────────────────────
-const authRoutes = require('./routes/auth.routes');
-const scanRoutes = require('./routes/scan.routes');
-const studentRoutes = require('./routes/students.routes');
-const attendanceRoutes = require('./routes/attendance.routes');
-const gateRoutes = require('./routes/gates.routes');
-const eventRoutes = require('./routes/events.routes');
-const libraryRoutes = require('./routes/library.routes');
-const electionRoutes = require('./routes/elections.routes');
-const reportRoutes = require('./routes/reports.routes');
-const adminRoutes = require('./routes/admin.routes');
-const accessRoutes = require('./routes/access.routes');
-const qrRoutes = require('./routes/qr.routes');
+function loadRoute(routeName, modulePath) {
+    try {
+        return require(modulePath);
+    } catch (err) {
+        logger.error(`Failed to load route module: ${routeName}`, {
+            routeName,
+            modulePath,
+            error: err.message,
+            stack: err.stack,
+        });
+
+        const fallback = express.Router();
+        fallback.all('*', (req, res) => {
+            res.status(503).json({
+                success: false,
+                error: `${routeName} route is temporarily unavailable`,
+            });
+        });
+        return fallback;
+    }
+}
+
+const authRoutes = loadRoute('auth', './routes/auth.routes');
+const scanRoutes = loadRoute('scan', './routes/scan.routes');
+const studentRoutes = loadRoute('students', './routes/students.routes');
+const attendanceRoutes = loadRoute('attendance', './routes/attendance.routes');
+const gateRoutes = loadRoute('gates', './routes/gates.routes');
+const eventRoutes = loadRoute('events', './routes/events.routes');
+const libraryRoutes = loadRoute('library', './routes/library.routes');
+const electionRoutes = loadRoute('elections', './routes/elections.routes');
+const reportRoutes = loadRoute('reports', './routes/reports.routes');
+const adminRoutes = loadRoute('admin', './routes/admin.routes');
+const accessRoutes = loadRoute('access', './routes/access.routes');
+const qrRoutes = loadRoute('qr', './routes/qr.routes');
 
 const app = express();
 
