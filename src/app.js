@@ -23,7 +23,6 @@ function routeFallback(routeName, err) {
         res.status(503).json({
             success: false,
             error: `${routeName} route is temporarily unavailable`,
-            debug: err.message,
         });
     });
     return fallback;
