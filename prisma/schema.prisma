@@ -25,6 +25,12 @@ enum CardStatus {
   REPLACED
 }
 
+enum PinkSlipStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum AdminRole {
   SUPER_ADMIN
   HOD
@@ -83,6 +89,7 @@ model Student {
   emergencyPhone  String?
   fcmToken        String?
   isActive        Boolean      @default(true)
+  passwordHash    String?
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
@@ -94,6 +101,7 @@ model Student {
   votes                Vote[]
   faceData             FaceData?
   faceDetectionLogs    FaceDetectionLog[]
+  pinkSlips            PinkSlip[]
 
   @@map("students")
 }
@@ -138,6 +146,7 @@ model AdminUser {
   subjects            Subject[]
   campusEvents        CampusEvent[]
   auditLogs           AuditLog[]
+  approvedPinkSlips   PinkSlip[]       @relation("ApprovedPinkSlips")
   gateId              String?      @db.ObjectId
   gate                Gate?        @relation(fields: [gateId], references: [id])
 
@@ -191,6 +200,17 @@ model ExitRule {
 
   @@unique([studentType, dayOfWeek])
   @@map("exit_rules")
+}
+
+model CurfewRule {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  studentType StudentType
+  startTime   String      // e.g., "21:00"
+  endTime     String      // e.g., "06:00"
+  isActive    Boolean     @default(true)
+  updatedAt   DateTime    @updatedAt
+
+  @@map("curfew_rules")
 }
 
 model ExitEvent {
@@ -399,4 +419,22 @@ model FaceDetectionLog {
   student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@map("face_detection_logs")
+}
+
+model PinkSlip {
+  id           String         @id @default(auto()) @map("_id") @db.ObjectId
+  studentId    String         @db.ObjectId
+  reason       String
+  fromDate     DateTime
+  toDate       DateTime
+  status       PinkSlipStatus @default(PENDING)
+  approvedById String?        @db.ObjectId
+  remarks      String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  student      Student        @relation(fields: [studentId], references: [id])
+  approvedBy   AdminUser?     @relation("ApprovedPinkSlips", fields: [approvedById], references: [id])
+
+  @@map("pink_slips")
 }

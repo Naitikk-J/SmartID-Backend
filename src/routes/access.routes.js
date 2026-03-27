@@ -304,6 +304,7 @@ router.get(
             const [events, total] = await Promise.all([
                 prisma.scanEvent.findMany({
                     where,
+                    include: { student: true },
                     orderBy: { scannedAt: 'desc' },
                     skip: (page - 1) * limit,
                     take: limit,
@@ -326,7 +327,8 @@ router.get(
                         const metadata = event.metadata || {};
                         return {
                             id: event.id,
-                            student_name: metadata.student_name || metadata.studentName || 'Unknown',
+                            student_email: metadata.student_name || metadata.studentName || 'Unknown',
+                            student_name: event.student?.fullName || 'Unknown',
                             event_type: metadata.event_type || 'ENTRY',
                             time: event.scannedAt,
                             gate_id: event.gateId || metadata.gate_id || 'N/A',
@@ -353,7 +355,7 @@ router.get(
 router.post(
     '/scan',
     authenticate,
-    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD', 'FACULTY'),
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD', 'FACULTY', 'STUDENT'),
     scanRateLimit,
     validate(accessScanSchema),
     async (req, res, next) => {
@@ -477,6 +479,7 @@ router.post(
             const scanEvent = await prisma.scanEvent.create({
                 data: {
                     scannedById: req.user.id,
+                    studentId: req.user.role === 'STUDENT' ? req.user.id : undefined,
                     scanType: 'ACCESS_SCAN',
                     result: resultCode,
                     gpsLat: latitude,

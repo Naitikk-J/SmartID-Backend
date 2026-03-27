@@ -40,6 +40,7 @@ let reportRoutes;
 let adminRoutes;
 let accessRoutes;
 let qrRoutes;
+let pinkSlipRoutes;
 
 try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
 try { scanRoutes = require('./routes/scan.routes'); } catch (err) { scanRoutes = routeFallback('scan', err); }
@@ -53,6 +54,8 @@ try { reportRoutes = require('./routes/reports.routes'); } catch (err) { reportR
 try { adminRoutes = require('./routes/admin.routes'); } catch (err) { adminRoutes = routeFallback('admin', err); }
 try { accessRoutes = require('./routes/access.routes'); } catch (err) { accessRoutes = routeFallback('access', err); }
 try { qrRoutes = require('./routes/qr.routes'); } catch (err) { qrRoutes = routeFallback('qr', err); }
+try { pinkSlipRoutes = require('./routes/pink-slip.routes'); } catch (err) { pinkSlipRoutes = routeFallback('pink-slip', err); }
+
 
 const app = express();
 
@@ -135,6 +138,7 @@ app.use('/api/v1/library', libraryRoutes);
 app.use('/api/v1/elections', electionRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/pink-slips', pinkSlipRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/qr', qrRoutes);
 

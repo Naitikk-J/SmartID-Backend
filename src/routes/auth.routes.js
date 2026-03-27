@@ -66,61 +66,87 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
             && password === HARD_CODED_TEST_STUDENT_PASSWORD
         ) {
             const passwordHash = await bcrypt.hash(HARD_CODED_TEST_STUDENT_PASSWORD, 12);
-            const user = await prisma.adminUser.upsert({
+            const user = await prisma.student.upsert({
                 where: { email: HARD_CODED_TEST_STUDENT_EMAIL },
                 update: {
-                    name: 'Test Student User',
+                    fullName: 'Test Hosteller User',
                     passwordHash,
-                    role: 'FACULTY',
                     department: 'CSE',
-                    module: null,
+                    year: 3,
+                    studentType: 'HOSTELLER_BOYS',
                     isActive: true,
-                    lastLogin: new Date(),
                 },
                 create: {
-                    name: 'Test Student User',
+                    fullName: 'Test Hosteller User',
                     email: HARD_CODED_TEST_STUDENT_EMAIL,
-                    passwordHash,
-                    role: 'FACULTY',
+                    enrollmentNo: '0901CSTEST',
                     department: 'CSE',
-                    module: null,
+                    year: 3,
+                    studentType: 'HOSTELLER_BOYS',
+                    passwordHash,
                     isActive: true,
-                    lastLogin: new Date(),
                 },
             });
 
-            const tokens = generateTokens(user);
+            const tokens = generateTokens({
+                id: user.id,
+                email: user.email,
+                role: 'STUDENT',
+                department: user.department,
+                module: null,
+            });
+
             return res.json({
                 success: true,
                 data: {
                     ...tokens,
                     user: {
                         id: user.id,
-                        name: user.name,
+                        name: user.fullName,
                         email: user.email,
-                        role: user.role,
+                        role: 'STUDENT',
                         department: user.department,
-                        module: user.module,
-                        gateId: user.gateId,
+                        module: null,
+                        studentType: user.studentType,
+                        enrollmentNo: user.enrollmentNo,
                         testUser: true,
                     },
                 },
             });
         }
 
-        const user = await prisma.adminUser.findUnique({ where: { email } });
+        let user = await prisma.adminUser.findUnique({ where: { email } });
+        let isStudent = false;
+
+        if (!user) {
+            // Check student collection
+            user = await prisma.student.findUnique({ where: { email } });
+            if (user) {
+                isStudent = true;
+                // Students use enrollmentNo as name if fullName is missing, but fullName is required in schema
+                user.name = user.fullName;
+                user.role = 'STUDENT'; // Virtual role for token
+            }
+        }
+
         if (!user) {
             throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
         }
+
         if (!user.isActive) {
             throw new AppError('Account is deactivated', 401, 'ACCOUNT_INACTIVE');
         }
 
-        const validPassword = await bcrypt.compare(password, user.passwordHash);
+        const passwordMatch = isStudent ? user.passwordHash : user.passwordHash;
+        if (!passwordMatch) {
+            throw new AppError('Login not enabled for this account', 401, 'LOGIN_DISABLED');
+        }
+
+        const validPassword = await bcrypt.compare(password, passwordMatch);
         if (!validPassword) {
             await logAction(req, {
                 action: 'LOGIN_FAILURE',
-                entity: 'AdminUser',
+                entity: isStudent ? 'Student' : 'AdminUser',
                 entityId: user.id,
                 userId: user.id,
                 newValue: { email, reason: 'Invalid password' }
@@ -128,17 +154,19 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
             throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
         }
 
-        // Update last login
-        await prisma.adminUser.update({
-            where: { id: user.id },
-            data: { lastLogin: new Date() },
-        });
+        // Update last login (only for AdminUser as Student doesn't have this field yet, but we can add it or skip)
+        if (!isStudent) {
+            await prisma.adminUser.update({
+                where: { id: user.id },
+                data: { lastLogin: new Date() },
+            });
+        }
 
         const tokens = generateTokens(user);
 
         await logAction(req, {
             action: 'LOGIN_SUCCESS',
-            entity: 'AdminUser',
+            entity: isStudent ? 'Student' : 'AdminUser',
             entityId: user.id,
             userId: user.id
         }).catch(() => { });
@@ -149,12 +177,13 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
                 ...tokens,
                 user: {
                     id: user.id,
-                    name: user.name,
+                    name: user.name || user.fullName,
                     email: user.email,
                     role: user.role,
                     department: user.department,
-                    module: user.module,
-                    gateId: user.gateId,
+                    module: user.module || null,
+                    gateId: user.gateId || null,
+                    isStudent,
                 },
             },
         });

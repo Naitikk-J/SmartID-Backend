@@ -33,7 +33,7 @@ const verifyScanSchema = z.object({
 router.post(
     '/verify',
     authenticate,
-    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
+    // requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'), // Replaced with any authenticated user
     scanRateLimit,
     validate(verifyScanSchema),
     async (req, res, next) => {
@@ -59,7 +59,7 @@ router.post(
 router.get(
     '/recent',
     authenticate,
-    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
+    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'),
     async (req, res, next) => {
         try {
             const { date, page, limit, studentType, direction, search } = req.query;
@@ -71,41 +71,51 @@ router.get(
                 const currentPage = page ? parseInt(page) : 1;
                 const currentLimit = limit ? parseInt(limit) : 50;
 
-                const where = {
+                const baseWhere = {
                     student: {
                         studentType: {
-                            in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'],
+                            in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS', 'DAY_SCHOLAR'],
                         },
                     },
                 };
 
+                const dateWhere = {};
                 if (date) {
                     const start = new Date(date);
                     start.setHours(0, 0, 0, 0);
                     const end = new Date(date);
                     end.setHours(23, 59, 59, 999);
-                    where.timestamp = { gte: start, lte: end };
+                    dateWhere.gte = start;
+                    dateWhere.lte = end;
                 }
 
+                const faceWhere = { ...baseWhere, timestamp: dateWhere };
+                const scanWhere = { ...baseWhere, scannedAt: dateWhere, result: 'VERIFIED' };
+
                 if (direction && ['ENTRY', 'EXIT'].includes(String(direction).toUpperCase())) {
-                    where.direction = String(direction).toUpperCase();
+                    faceWhere.direction = String(direction).toUpperCase();
+                    scanWhere.scanType = String(direction).toUpperCase() === 'ENTRY' ? 'GATE_ENTRY' : 'GATE_EXIT';
                 }
 
                 if (search) {
                     const value = String(search).trim();
                     if (value) {
-                        where.student.OR = [
-                            { fullName: { contains: value, mode: 'insensitive' } },
-                            { enrollmentNo: { contains: value, mode: 'insensitive' } },
-                        ];
+                        const searchFilter = {
+                            OR: [
+                                { fullName: { contains: value, mode: 'insensitive' } },
+                                { enrollmentNo: { contains: value, mode: 'insensitive' } },
+                                { department: { contains: value, mode: 'insensitive' } },
+                            ],
+                        };
+                        faceWhere.student = { ...faceWhere.student, ...searchFilter };
+                        scanWhere.student = { ...scanWhere.student, ...searchFilter };
                     }
                 }
 
-                const [logs, total] = await Promise.all([
+                const [faceLogs, scanLogs] = await Promise.all([
                     prisma.faceDetectionLog.findMany({
-                        where,
+                        where: faceWhere,
                         orderBy: { timestamp: 'desc' },
-                        skip: (currentPage - 1) * currentLimit,
                         take: currentLimit,
                         include: {
                             student: {
@@ -114,34 +124,71 @@ router.get(
                                     fullName: true,
                                     enrollmentNo: true,
                                     studentType: true,
+                                    department: true,
                                 },
                             },
                         },
                     }),
-                    prisma.faceDetectionLog.count({ where }),
+                    prisma.scanEvent.findMany({
+                        where: scanWhere,
+                        orderBy: { scannedAt: 'desc' },
+                        take: currentLimit,
+                        include: {
+                            student: {
+                                select: {
+                                    id: true,
+                                    fullName: true,
+                                    enrollmentNo: true,
+                                    studentType: true,
+                                    department: true,
+                                },
+                            },
+                        },
+                    }),
                 ]);
+
+                // Map and merge
+                const merged = [
+                    ...faceLogs.map((log) => ({
+                        id: log.id,
+                        student: log.student,
+                        studentName: log.student?.fullName,
+                        enrollmentNo: log.student?.enrollmentNo,
+                        studentType: log.student?.studentType,
+                        department: log.student?.department,
+                        direction: log.direction,
+                        confidence: log.confidence,
+                        scannedAt: log.timestamp,
+                        gateName: log.source || 'Hosteller Face Gate',
+                        result: 'VERIFIED',
+                        scanType: 'HOSTELLER_FACE',
+                    })),
+                    ...scanLogs.map((log) => ({
+                        id: log.id,
+                        student: log.student,
+                        studentName: log.student?.fullName,
+                        enrollmentNo: log.student?.enrollmentNo,
+                        studentType: log.student?.studentType,
+                        department: log.student?.department,
+                        direction: log.scanType === 'GATE_ENTRY' ? 'ENTRY' : 'EXIT',
+                        confidence: 100,
+                        scannedAt: log.scannedAt,
+                        gateName: log.gateId || 'Main Gate',
+                        result: 'VERIFIED',
+                        scanType: 'QR_SCAN',
+                    })),
+                ].sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+                .slice((currentPage - 1) * currentLimit, currentPage * currentLimit);
 
                 return res.json({
                     success: true,
                     data: {
-                        events: logs.map((log) => ({
-                            id: log.id,
-                            student: log.student,
-                            studentName: log.student?.fullName,
-                            enrollmentNo: log.student?.enrollmentNo,
-                            studentType: log.student?.studentType,
-                            direction: log.direction,
-                            confidence: log.confidence,
-                            scannedAt: log.timestamp,
-                            gateName: log.source || 'Hosteller Face Gate',
-                            result: 'VERIFIED',
-                            scanType: 'HOSTELLER_FACE',
-                        })),
-                        total,
-                        pages: Math.ceil(total / currentLimit),
+                        events: merged,
+                        total: faceLogs.length + scanLogs.length, // Rough total
+                        pages: Math.ceil((faceLogs.length + scanLogs.length) / currentLimit),
                         page: currentPage,
                         limit: currentLimit,
-                        source: 'HOSTELLER_LOGS',
+                        source: 'HOSTELLER_LOGS_UNIFIED',
                     },
                 });
             }
@@ -165,7 +212,7 @@ router.get(
 router.get(
     '/export',
     authenticate,
-    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
+    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'),
     async (req, res, next) => {
         try {
             const { date } = req.query;
@@ -756,5 +803,54 @@ router.post(
         }
     }
 );
+
+// GET /me — Personal logs for students
+router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const studentId = req.user.id;
+        const { limit = 20 } = req.query;
+
+        // Fetch both scan events and face detections
+        const [scanEvents, faceLogs] = await Promise.all([
+            prisma.scanEvent.findMany({
+                where: { studentId },
+                orderBy: { scannedAt: 'desc' },
+                take: parseInt(limit),
+            }),
+            prisma.faceDetectionLog.findMany({
+                where: { studentId },
+                orderBy: { timestamp: 'desc' },
+                take: parseInt(limit),
+            }),
+        ]);
+
+        // Merge and format
+        const merged = [
+            ...scanEvents.map(e => ({
+                id: e.id,
+                type: 'SCAN',
+                direction: e.scanType.includes('ENTRY') ? 'ENTRY' : 'EXIT',
+                time: e.scannedAt,
+                result: e.result,
+                gate: e.gateId || 'Main Gate',
+            })),
+            ...faceLogs.map(l => ({
+                id: l.id,
+                type: 'FACE',
+                direction: l.direction,
+                time: l.timestamp,
+                result: 'VERIFIED',
+                gate: l.source || 'Face Gate',
+            })),
+        ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, parseInt(limit));
+
+        res.json({
+            success: true,
+            data: merged,
+        });
+    } catch (err) {
+        next(err);
+    }
+});
 
 module.exports = router;

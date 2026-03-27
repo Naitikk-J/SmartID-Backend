@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const config = require('../config/env');
 
 const ALGORITHM = 'aes-256-gcm';
@@ -79,4 +80,25 @@ function generateCardUid() {
     return 'CRD-' + crypto.randomBytes(2).toString('hex').toUpperCase();
 }
 
-module.exports = { encryptToken, decryptToken, generateCardUid };
+/**
+ * Hash a plain text password using bcrypt.
+ * @param {string} password - plain text password
+ * @returns {Promise<string>} hashed password
+ */
+async function hashPassword(password) {
+    const salt = await bcrypt.genSalt(10);
+    return bcrypt.hash(password, salt);
+}
+
+/**
+ * Verify a plain text password against a hash.
+ * @param {string} password - plain text password
+ * @param {string} hash - salt + hashed password
+ * @returns {Promise<boolean>} true if match
+ */
+async function verifyPassword(password, hash) {
+    if (!password || !hash) return false;
+    return bcrypt.compare(password, hash);
+}
+
+module.exports = { encryptToken, decryptToken, generateCardUid, hashPassword, verifyPassword };

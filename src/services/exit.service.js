@@ -18,6 +18,11 @@ async function checkExitAllowed(student, gateId) {
     const jsDay = now.getDay(); // 0=Sun
     const dayOfWeek = jsDay === 0 ? 7 : jsDay;
 
+    // Day Scholars have no exit limits
+    if (student.studentType === 'DAY_SCHOLAR') {
+        return { allowed: true, mode: 'BYPASS', used: 0, max: -1, reason: 'Day Scholar bypass' };
+    }
+
     // Step 1: Check for active campus event
     const activeEvent = await prisma.campusEvent.findFirst({
         where: {

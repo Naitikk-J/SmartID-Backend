@@ -10,7 +10,7 @@ const { authenticate, requireRole, requireModule } = require('../middleware/auth
 const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
-const { encryptToken, generateCardUid } = require('../services/crypto.service');
+const { encryptToken, generateCardUid, hashPassword } = require('../services/crypto.service');
 const { logAction } = require('../services/audit.service');
 const faceAiService = require('../services/faceAi.service');
 
@@ -33,6 +33,7 @@ const createStudentSchema = z.object({
     conditions: z.array(z.string()).optional(),
     emergencyName: z.string().optional(),
     emergencyPhone: z.string().optional(),
+    password: z.string().min(6).optional(),
 });
 
 const updateStudentSchema = createStudentSchema.partial();
@@ -83,7 +84,11 @@ router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARD
 // ── POST / — Create student ────────────────────────────────
 router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createStudentSchema), async (req, res, next) => {
     try {
-        const student = await prisma.student.create({ data: req.body });
+        const { password, ...studentData } = req.body;
+        if (password) {
+            studentData.passwordHash = await hashPassword(password);
+        }
+        const student = await prisma.student.create({ data: studentData });
 
         // Auto-create card
         const cardUid = generateCardUid();
@@ -123,17 +128,24 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
             headers.forEach((h, idx) => { row[h] = values[idx]; });
 
             try {
+                const { password, ...rowData } = row;
+                const studentData = {
+                    enrollmentNo: rowData.enrollmentNo,
+                    fullName: rowData.fullName,
+                    email: rowData.email,
+                    phone: rowData.phone || null,
+                    department: rowData.department,
+                    year: parseInt(rowData.year),
+                    section: rowData.section || null,
+                    studentType: rowData.studentType,
+                };
+
+                if (password || rowData.password) {
+                    studentData.passwordHash = await hashPassword(password || rowData.password);
+                }
+
                 const student = await prisma.student.create({
-                    data: {
-                        enrollmentNo: row.enrollmentNo,
-                        fullName: row.fullName,
-                        email: row.email,
-                        phone: row.phone || null,
-                        department: row.department,
-                        year: parseInt(row.year),
-                        section: row.section || null,
-                        studentType: row.studentType,
-                    },
+                    data: studentData,
                 });
 
                 // Create card
