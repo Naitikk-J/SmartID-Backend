@@ -74,7 +74,15 @@ router.get('/', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), async
 
         if (status) where.status = status;
         if (studentType) {
-            where.student = { studentType };
+            if (String(studentType).toUpperCase() === 'HOSTELLER') {
+                where.student = {
+                    studentType: {
+                        in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'],
+                    },
+                };
+            } else {
+                where.student = { studentType };
+            }
         }
 
         const skip = (parseInt(page) - 1) * parseInt(limit);

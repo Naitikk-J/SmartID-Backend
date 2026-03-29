@@ -90,7 +90,7 @@ router.get(
                 const baseWhere = {
                     student: {
                         studentType: {
-                            in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS', 'DAY_SCHOLAR'],
+                            in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'],
                         },
                     },
                 };
@@ -183,6 +183,7 @@ router.get(
                         gateName: log.source || 'Hosteller Face Gate',
                         result: 'VERIFIED',
                         scanType: 'HOSTELLER_FACE',
+                        source: 'HOSTELLER_FACE',
                     })),
                     ...scanLogs.map((log) => ({
                         id: log.id,
@@ -197,6 +198,7 @@ router.get(
                         gateName: log.gate?.name || log.gateId || 'Main Gate',
                         result: 'VERIFIED',
                         scanType: 'QR_SCAN',
+                        source: log?.metadata?.source || 'QR_SCAN',
                     })),
                 ].sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
                     .slice((currentPage - 1) * currentLimit, currentPage * currentLimit);
