@@ -65,20 +65,24 @@ async function main() {
 
     // 5. Sample Students with Cards
     const students = [
-        { enrollment: '0101CS221001', name: 'Naitik Varshney', type: 'DAY_SCHOLAR', dept: 'CSE' },
-        { enrollment: '0101CS221002', name: 'Ananya Sharma', type: 'HOSTELLER_GIRLS', dept: 'CSE' },
-        { enrollment: '0101IT221045', name: 'Rahul Kumar', type: 'HOSTELLER_BOYS', dept: 'IT' },
+        { enrollment: '0101CS221002', name: 'Ananya Sharma', type: 'HOSTELLER_GIRLS', dept: 'CSE', phone: '9000000002' },
+        { enrollment: '0101IT221045', name: 'Rahul Kumar', type: 'HOSTELLER_BOYS', dept: 'IT', phone: '9000000003' },
+        { enrollment: '0101EC221012', name: 'Priya Singh', type: 'HOSTELLER_GIRLS', dept: 'EC', phone: '9000000004' },
+        { enrollment: '0101ME221023', name: 'Arjun Patel', type: 'HOSTELLER_BOYS', dept: 'ME', phone: '9000000005' },
     ];
 
     for (const s of students) {
+        const studentPasswordHash = await bcrypt.hash(s.phone, 12);
         const student = await prisma.student.create({
             data: {
                 enrollmentNo: s.enrollment,
                 fullName: s.name,
                 email: `${s.enrollment.toLowerCase()}@mits.ac.in`,
+                phone: s.phone,
                 studentType: s.type,
                 department: s.dept,
                 year: 2,
+                passwordHash: studentPasswordHash,
                 cards: {
                     create: {
                         cardUid: `CARD_${s.enrollment}`,

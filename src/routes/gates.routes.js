@@ -21,7 +21,7 @@ const updateRuleSchema = z.object({
 
 const overrideSchema = z.object({
     studentId: z.string().min(1),
-    gateId: z.string().min(1),
+    gateId: z.string().min(1).optional().nullable(),
     direction: z.enum(['EXIT', 'ENTRY']),
 });
 
@@ -79,18 +79,37 @@ router.get('/exit-history', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'WAR
 });
 
 // ── POST /exit-override — manual exit/entry ─────────────────
-router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'SECURITY_GUARD'), validate(overrideSchema), async (req, res, next) => {
+router.post('/exit-override', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'SECURITY_GUARD', 'WARDEN', 'FACULTY'), validate(overrideSchema), async (req, res, next) => {
     try {
         const event = await exitService.recordExitEvent(
             req.body.studentId,
-            req.body.gateId,
-            req.body.direction
+            req.body.gateId || null,
+            req.body.direction,
+            req.user.id
         );
         // Mark as override
         const prisma = require('../config/database');
         await prisma.exitEvent.update({
             where: { id: event.id },
             data: { overrideById: req.user.id },
+        });
+
+        // Mirror override into scan_events so scan-based feeds/app timelines stay in sync.
+        await prisma.scanEvent.create({
+            data: {
+                studentId: req.body.studentId,
+                scannedById: req.user.id,
+                scanType: req.body.direction === 'ENTRY' ? 'GATE_ENTRY' : 'GATE_EXIT',
+                result: 'VERIFIED',
+                gateId: req.body.gateId || null,
+                scannedAt: event.eventTime,
+                metadata: {
+                    direction: req.body.direction,
+                    event_type: req.body.direction,
+                    source: 'MANUAL_OVERRIDE',
+                    linkedExitEventId: event.id,
+                },
+            },
         });
 
         res.json({

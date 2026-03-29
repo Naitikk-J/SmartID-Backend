@@ -498,6 +498,7 @@ router.post(
                         latitude,
                         longitude,
                         accuracy,
+                        direction: eventType,
                         event_type: eventType,
                         student_name: req.user.email,
                     },

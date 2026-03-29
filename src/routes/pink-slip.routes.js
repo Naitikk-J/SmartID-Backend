@@ -28,7 +28,7 @@ const updatePinkSlipSchema = z.object({
 router.post('/', authenticate, requireRole('STUDENT'), validate(createPinkSlipSchema), async (req, res, next) => {
     try {
         const { reason, fromDate, toDate } = req.body;
-        
+
         const pinkSlip = await prisma.pinkSlip.create({
             data: {
                 studentId: req.user.id,
@@ -53,7 +53,7 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
     try {
         const pinkSlips = await prisma.pinkSlip.findMany({
             where: { studentId: req.user.id },
-            orderBy: { createdAt: 'desc' },
+            orderBy: { updatedAt: 'desc' },
         });
 
         res.json({
@@ -71,7 +71,7 @@ router.get('/', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), async
     try {
         const { status, studentType, page = 1, limit = 50 } = req.query;
         const where = {};
-        
+
         if (status) where.status = status;
         if (studentType) {
             where.student = { studentType };

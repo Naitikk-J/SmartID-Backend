@@ -25,6 +25,22 @@ const BADGE_MAP = {
     ALREADY_ENTERED: 'AMBER',
 };
 
+function resolveDirectionFromScanEvent(scanEvent) {
+    const metadataDirection = scanEvent?.metadata?.direction;
+    if (metadataDirection === 'ENTRY' || metadataDirection === 'EXIT') {
+        return metadataDirection;
+    }
+
+    const metadataEventType = scanEvent?.metadata?.event_type;
+    if (metadataEventType === 'ENTRY' || metadataEventType === 'EXIT') {
+        return metadataEventType;
+    }
+
+    if (scanEvent?.scanType === 'GATE_ENTRY') return 'ENTRY';
+    if (scanEvent?.scanType === 'GATE_EXIT') return 'EXIT';
+    return null;
+}
+
 /**
  * Verify a QR scan and process the operation.
  * This is the most critical function in the entire system.
@@ -529,7 +545,7 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
                 result: e.result,
                 badge: BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
                 gateId: e.gateId,
-                direction: e.metadata?.direction || (e.scanType === 'GATE_ENTRY' ? 'ENTRY' : e.scanType === 'GATE_EXIT' ? 'EXIT' : null)
+                direction: resolveDirectionFromScanEvent(e)
             })),
             total,
             pages: Math.ceil(total / limit)
@@ -581,7 +597,7 @@ async function exportScans({ date }) {
             `"${e.student?.fullName || 'Unknown'}"`,
             e.student?.department || 'N/A',
             e.scanType,
-            e.metadata?.direction || (e.scanType === 'GATE_ENTRY' ? 'ENTRY' : e.scanType === 'GATE_EXIT' ? 'EXIT' : 'N/A'),
+            resolveDirectionFromScanEvent(e) || 'N/A',
             e.result,
             BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY')
         ]);

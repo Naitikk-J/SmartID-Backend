@@ -16,6 +16,22 @@ const { AppError } = require('../middleware/errorHandler');
 const router = express.Router();
 const MONGODB_OBJECT_ID_REGEX = /^[a-f\d]{24}$/i;
 
+function resolveDirectionFromScanEvent(scanEvent) {
+    const metadataDirection = scanEvent?.metadata?.direction;
+    if (metadataDirection === 'ENTRY' || metadataDirection === 'EXIT') {
+        return metadataDirection;
+    }
+
+    const metadataEventType = scanEvent?.metadata?.event_type;
+    if (metadataEventType === 'ENTRY' || metadataEventType === 'EXIT') {
+        return metadataEventType;
+    }
+
+    if (scanEvent?.scanType === 'GATE_ENTRY') return 'ENTRY';
+    if (scanEvent?.scanType === 'GATE_EXIT') return 'EXIT';
+    return null;
+}
+
 const verifyScanSchema = z.object({
     rawToken: z.string().min(1, 'QR token required'),
     gpsLat: z.union([z.string(), z.number()]).optional().nullable(),
@@ -134,6 +150,11 @@ router.get(
                         orderBy: { scannedAt: 'desc' },
                         take: currentLimit,
                         include: {
+                            gate: {
+                                select: {
+                                    name: true,
+                                },
+                            },
                             student: {
                                 select: {
                                     id: true,
@@ -170,15 +191,15 @@ router.get(
                         enrollmentNo: log.student?.enrollmentNo,
                         studentType: log.student?.studentType,
                         department: log.student?.department,
-                        direction: log.scanType === 'GATE_ENTRY' ? 'ENTRY' : 'EXIT',
+                        direction: resolveDirectionFromScanEvent(log),
                         confidence: 100,
                         scannedAt: log.scannedAt,
-                        gateName: log.gateId || 'Main Gate',
+                        gateName: log.gate?.name || log.gateId || 'Main Gate',
                         result: 'VERIFIED',
                         scanType: 'QR_SCAN',
                     })),
                 ].sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
-                .slice((currentPage - 1) * currentLimit, currentPage * currentLimit);
+                    .slice((currentPage - 1) * currentLimit, currentPage * currentLimit);
 
                 return res.json({
                     success: true,
@@ -202,6 +223,143 @@ router.get(
                 studentType,
             });
             res.json({ success: true, data: result });
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
+// GET /hosteller/outside
+router.get(
+    '/hosteller/outside',
+    authenticate,
+    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'),
+    async (req, res, next) => {
+        try {
+            const { date } = req.query;
+
+            let scanTimeWhere = undefined;
+            let faceTimeWhere = undefined;
+
+            if (date) {
+                const start = new Date(String(date));
+                start.setHours(0, 0, 0, 0);
+                const end = new Date(String(date));
+                end.setHours(23, 59, 59, 999);
+                scanTimeWhere = { gte: start, lte: end };
+                faceTimeWhere = { gte: start, lte: end };
+            }
+
+            const [scanLogs, faceLogs] = await Promise.all([
+                prisma.scanEvent.findMany({
+                    where: {
+                        result: 'VERIFIED',
+                        ...(scanTimeWhere ? { scannedAt: scanTimeWhere } : {}),
+                        student: {
+                            studentType: {
+                                in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'],
+                            },
+                        },
+                    },
+                    include: {
+                        gate: {
+                            select: {
+                                name: true,
+                            },
+                        },
+                        student: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                enrollmentNo: true,
+                                studentType: true,
+                                department: true,
+                            },
+                        },
+                    },
+                    orderBy: { scannedAt: 'desc' },
+                    take: 2000,
+                }),
+                prisma.faceDetectionLog.findMany({
+                    where: {
+                        ...(faceTimeWhere ? { timestamp: faceTimeWhere } : {}),
+                        student: {
+                            studentType: {
+                                in: ['HOSTELLER_BOYS', 'HOSTELLER_GIRLS'],
+                            },
+                        },
+                    },
+                    include: {
+                        student: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                enrollmentNo: true,
+                                studentType: true,
+                                department: true,
+                            },
+                        },
+                    },
+                    orderBy: { timestamp: 'desc' },
+                    take: 2000,
+                }),
+            ]);
+
+            const unifiedLogs = [
+                ...scanLogs
+                    .map((log) => {
+                        const direction = resolveDirectionFromScanEvent(log);
+                        if (!direction) return null;
+                        return {
+                            studentId: log.student?.id,
+                            student: log.student,
+                            direction,
+                            time: log.scannedAt,
+                            gateId: log.gateId || null,
+                            gateName: log.gate?.name || log.gateId || 'Main Gate',
+                            source: 'QR_SCAN',
+                        };
+                    })
+                    .filter(Boolean),
+                ...faceLogs.map((log) => ({
+                    studentId: log.student?.id,
+                    student: log.student,
+                    direction: log.direction,
+                    time: log.timestamp,
+                    gateId: null,
+                    gateName: log.source || 'Hosteller Face Gate',
+                    source: 'HOSTELLER_FACE',
+                })),
+            ].sort((a, b) => new Date(b.time) - new Date(a.time));
+
+            const latestByStudent = new Map();
+            for (const log of unifiedLogs) {
+                if (!log?.studentId) continue;
+                if (!latestByStudent.has(log.studentId)) {
+                    latestByStudent.set(log.studentId, log);
+                }
+            }
+
+            const outsideStudents = [...latestByStudent.values()]
+                .filter((log) => log.direction === 'EXIT')
+                .map((log) => ({
+                    student: log.student,
+                    lastDirection: log.direction,
+                    lastSeenAt: log.time,
+                    gateId: log.gateId,
+                    gateName: log.gateName,
+                    source: log.source,
+                }));
+
+            res.json({
+                success: true,
+                data: {
+                    count: outsideStudents.length,
+                    students: outsideStudents,
+                    basis: 'LATEST_DIRECTION_IS_EXIT',
+                    date: date || null,
+                },
+            });
         } catch (err) {
             next(err);
         }
@@ -829,7 +987,7 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
             ...scanEvents.map(e => ({
                 id: e.id,
                 type: 'SCAN',
-                direction: e.scanType.includes('ENTRY') ? 'ENTRY' : 'EXIT',
+                direction: resolveDirectionFromScanEvent(e),
                 time: e.scannedAt,
                 result: e.result,
                 gate: e.gateId || 'Main Gate',

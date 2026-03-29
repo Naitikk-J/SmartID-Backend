@@ -17,6 +17,8 @@
         "migrate": "prisma migrate deploy",
         "generate": "prisma generate",
         "seed": "node prisma/seed.js",
+        "seed:students": "node prisma/reset-hosteller-students.js",
+        "backfill:scan-directions": "node prisma/backfill-scan-directions.js",
         "lint": "eslint src/**/*.js",
         "vercel-build": "prisma generate"
     },
