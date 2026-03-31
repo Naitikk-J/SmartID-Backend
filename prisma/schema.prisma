@@ -109,6 +109,7 @@ model Student {
   faceDetectionLogs    FaceDetectionLog[]
   pinkSlips            PinkSlip[]
 
+  @@index([studentType])
   @@map("students")
 }
 
@@ -127,6 +128,7 @@ model Card {
   deactivatedBy   AdminUser?  @relation("DeactivatedCards", fields: [deactivatedById], references: [id])
   scanEvents      ScanEvent[]
 
+  @@index([studentId])
   @@map("cards")
 }
 
@@ -196,6 +198,7 @@ model ScanEvent {
   @@index([scanType, scannedAt])
   @@index([scannedById, scanType, scannedAt])
   @@index([result, scannedAt])
+  @@index([gateId, scannedAt])
 
   @@map("scan_events")
 }
@@ -238,6 +241,9 @@ model ExitEvent {
   gate         Gate?         @relation(fields: [gateId], references: [id])
   overrideBy   AdminUser?    @relation("ExitOverrides", fields: [overrideById], references: [id])
 
+  @@index([studentId, eventTime])
+  @@index([direction, eventTime])
+  @@index([gateId, eventTime])
   @@map("exit_events")
 }
 
@@ -306,6 +312,7 @@ model AttendanceSession {
   faculty         AdminUser               @relation(fields: [facultyId], references: [id])
   records         AttendanceRecord[]
 
+  @@index([facultyId, status, startedAt])
   @@map("attendance_sessions")
 }
 
@@ -325,6 +332,8 @@ model AttendanceRecord {
   overrideBy      AdminUser?        @relation("AttendanceOverrides", fields: [overrideById], references: [id])
 
   @@unique([sessionId, studentId])
+  @@index([sessionId, markedAt])
+  @@index([studentId, markedAt])
   @@map("attendance_records")
 }
 
@@ -433,6 +442,7 @@ model FaceDetectionLog {
   @@index([timestamp])
   @@index([studentId, timestamp])
   @@index([direction, timestamp])
+  @@index([studentId, direction, timestamp])
 
   @@map("face_detection_logs")
 }
