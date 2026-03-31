@@ -127,7 +127,7 @@ app.use((req, res, next) => {
 });
 
 // ── 6. Health check ─────────────────────────────────────────
-app.get('/health', (req, res) => {
+app.get(['/health', '/api/v1/health'], (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
