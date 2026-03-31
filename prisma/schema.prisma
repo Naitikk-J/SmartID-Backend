@@ -75,11 +75,17 @@ model Student {
   id              String       @id @default(auto()) @map("_id") @db.ObjectId
   enrollmentNo    String       @unique
   fullName        String
+  fatherName      String?
   email           String       @unique
   phone           String?
+  fatherMobile    String?
   department      String
   year            Int          // 1-4
   section         String?
+  roomNo          String?
+  allottedNo      String?
+  category        String?
+  permanentAddress String?
   studentType     StudentType
   photoUrl        String?
   bloodGroup      String?
@@ -184,6 +190,12 @@ model ScanEvent {
   card        Card?     @relation(fields: [cardId], references: [id])
   scannedBy   AdminUser @relation(fields: [scannedById], references: [id])
   gate        Gate?     @relation(fields: [gateId], references: [id])
+
+  @@index([scannedAt])
+  @@index([studentId, scannedAt])
+  @@index([scanType, scannedAt])
+  @@index([scannedById, scanType, scannedAt])
+  @@index([result, scannedAt])
 
   @@map("scan_events")
 }
@@ -417,6 +429,10 @@ model FaceDetectionLog {
   source          String?      // Camera or gate ID
 
   student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([timestamp])
+  @@index([studentId, timestamp])
+  @@index([direction, timestamp])
 
   @@map("face_detection_logs")
 }

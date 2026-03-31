@@ -23,8 +23,8 @@
         "vercel-build": "prisma generate"
     },
     "dependencies": {
-        "@prisma/client": "^5.10.0",
         "@aws-sdk/client-s3": "^3.500.0",
+        "@prisma/client": "^5.10.0",
         "bcryptjs": "^2.4.3",
         "cors": "^2.8.5",
         "dotenv": "^16.4.0",
@@ -36,6 +36,7 @@
         "jsonwebtoken": "^9.0.2",
         "multer": "^1.4.5-lts.1",
         "node-cron": "^3.0.3",
+        "pdf-parse": "^2.4.5",
         "socket.io": "^4.7.4",
         "uuid": "^9.0.0",
         "winston": "^3.11.0",

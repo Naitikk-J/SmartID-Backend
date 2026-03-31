@@ -6,6 +6,7 @@
 const express = require('express');
 const { z } = require('zod');
 const multer = require('multer');
+const { PDFParse } = require('pdf-parse');
 const { authenticate, requireRole, requireModule } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
@@ -17,15 +18,288 @@ const faceAiService = require('../services/faceAi.service');
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+const HEADER_ALIASES = {
+    enrollmentno: 'enrollmentNo',
+    enrollment: 'enrollmentNo',
+    enrollno: 'enrollmentNo',
+    studentname: 'fullName',
+    fullname: 'fullName',
+    name: 'fullName',
+    fathername: 'fatherName',
+    studetnroom: 'roomNo',
+    studentroom: 'roomNo',
+    room: 'roomNo',
+    roomno: 'roomNo',
+    roomnumber: 'roomNo',
+    alloted: 'allottedNo',
+    allotment: 'allottedNo',
+    allotted: 'allottedNo',
+    fathermobile: 'fatherMobile',
+    fatherphone: 'fatherMobile',
+    mobile: 'phone',
+    studentmobile: 'phone',
+    phone: 'phone',
+    studentemailid: 'email',
+    emailid: 'email',
+    email: 'email',
+    category: 'category',
+    permanentaddress: 'permanentAddress',
+    address: 'permanentAddress',
+    department: 'department',
+    year: 'year',
+    section: 'section',
+    studenttype: 'studentType',
+    residentialtype: 'studentType',
+    password: 'password',
+};
+
+function normalizeHeaderName(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+}
+
+function canonicalizeHeader(value) {
+    const normalized = normalizeHeaderName(value);
+    return HEADER_ALIASES[normalized] || String(value || '').trim();
+}
+
+function parseCsvLine(line) {
+    const values = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const next = line[i + 1];
+
+        if (char === '"') {
+            if (inQuotes && next === '"') {
+                current += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (char === ',' && !inQuotes) {
+            values.push(current.trim());
+            current = '';
+            continue;
+        }
+
+        current += char;
+    }
+
+    values.push(current.trim());
+    return values;
+}
+
+function normalizeStudentType(value) {
+    const normalized = String(value || '').trim().toUpperCase().replace(/\s+/g, '_');
+    if (normalized === 'DAY_SCHOLAR') return 'DAY_SCHOLAR';
+    if (normalized === 'HOSTELLER_GIRLS' || normalized === 'HOSTEL_GIRLS') return 'HOSTELLER_GIRLS';
+    if (normalized === 'HOSTELLER_BOYS' || normalized === 'HOSTEL_BOYS' || normalized === 'HOSTELLER') return 'HOSTELLER_BOYS';
+    return 'HOSTELLER_BOYS';
+}
+
+function sanitizePhone(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+}
+
+function inferYear(value) {
+    const parsed = parseInt(String(value || ''), 10);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 4) return parsed;
+    return 1;
+}
+
+function buildStudentDataFromRow(row) {
+    const enrollmentNo = String(row.enrollmentNo || '').trim();
+    const fullName = String(row.fullName || '').trim();
+
+    if (!enrollmentNo || !fullName) {
+        throw new Error('Missing required fields: enrollmentNo/fullName');
+    }
+
+    const emailCandidate = String(row.email || '').trim().toLowerCase();
+    const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCandidate)
+        ? emailCandidate
+        : `${enrollmentNo.toLowerCase()}@students.local`;
+
+    const phone = sanitizePhone(row.phone || row.studentMobile || row.mobile);
+    const emergencyPhone = sanitizePhone(row.fatherMobile || row.emergencyPhone);
+    const emergencyName = String(row.fatherName || row.emergencyName || '').trim() || null;
+
+    const department = String(row.department || row.category || '').trim() || 'GENERAL';
+    const section = String(row.section || row.roomNo || row.allottedNo || '').trim() || null;
+    const roomNo = String(row.roomNo || row.allottedNo || '').trim() || null;
+    const allottedNo = String(row.allottedNo || '').trim() || null;
+    const category = String(row.category || '').trim() || null;
+    const permanentAddress = String(row.permanentAddress || row.address || '').trim() || null;
+    const studentType = normalizeStudentType(row.studentType || row.residentialType);
+    const year = inferYear(row.year);
+
+    const studentData = {
+        enrollmentNo,
+        fullName,
+        fatherName: emergencyName,
+        email,
+        phone,
+        fatherMobile: emergencyPhone,
+        department,
+        year,
+        section,
+        roomNo,
+        allottedNo,
+        category,
+        permanentAddress,
+        studentType,
+        emergencyName,
+        emergencyPhone,
+    };
+
+    const passwordSeed = phone || emergencyPhone;
+    if (!passwordSeed) {
+        throw new Error('Student mobile is required to set initial password');
+    }
+    return { studentData, passwordSeed };
+}
+
+function extractRowsFromCsv(csvData) {
+    const lines = csvData
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+    if (lines.length < 2) {
+        throw new AppError('CSV must have header + data rows', 400);
+    }
+
+    const rawHeaders = parseCsvLine(lines[0]);
+    const headers = rawHeaders.map(canonicalizeHeader);
+    const rows = [];
+
+    for (let i = 1; i < lines.length; i++) {
+        let values = parseCsvLine(lines[i]);
+
+        // Address fields often include commas without quotes; merge overflow into last column.
+        if (values.length > headers.length) {
+            values = [...values.slice(0, headers.length - 1), values.slice(headers.length - 1).join(',')];
+        }
+
+        const row = {};
+        headers.forEach((header, idx) => {
+            row[header] = (values[idx] || '').trim();
+        });
+        rows.push(row);
+    }
+
+    return rows;
+}
+
+function parseNameChunks(nameChunk) {
+    const cleaned = String(nameChunk || '').trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+        return { fullName: '', fatherName: '' };
+    }
+
+    const tokens = cleaned.split(' ');
+    const titleIndex = tokens.findIndex((token) => /^(mr|mrs|ms|dr|shri|smt)\.?$/i.test(token));
+
+    if (titleIndex > 0) {
+        return {
+            fullName: tokens.slice(0, titleIndex).join(' '),
+            fatherName: tokens.slice(titleIndex).join(' '),
+        };
+    }
+
+    if (tokens.length > 2) {
+        return {
+            fullName: tokens.slice(0, 2).join(' '),
+            fatherName: tokens.slice(2).join(' '),
+        };
+    }
+
+    return { fullName: cleaned, fatherName: '' };
+}
+
+function extractRowsFromPdfText(pdfText) {
+    const lines = pdfText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+    const rowStarts = [];
+    let current = '';
+
+    for (const line of lines) {
+        if (/^\d+\s+\S+\s+[A-Za-z0-9]{6,}/.test(line)) {
+            if (current) rowStarts.push(current);
+            current = line;
+        } else if (current) {
+            current += ` ${line}`;
+        }
+    }
+    if (current) rowStarts.push(current);
+
+    const parsedRows = [];
+
+    for (const rawRow of rowStarts) {
+        const row = rawRow.replace(/\s+/g, ' ').trim();
+        const match = row.match(/^(\d+)\s+(\S+)\s+([A-Za-z0-9]{6,})\s+(.+?)\s+(\d{10})\s+(\d{10})\s+([^\s]+@[^\s]+)\s+([A-Za-z]+)\s+(.+)$/i);
+        if (!match) continue;
+
+        const [, , allottedNo, enrollmentNo, nameChunkRaw, fatherMobile, phone, email, category, permanentAddress] = match;
+
+        let roomNo = '';
+        let nameChunk = nameChunkRaw;
+        const roomMatch = nameChunkRaw.match(/(.+?)\s+(\d{3,6})$/);
+        if (roomMatch) {
+            nameChunk = roomMatch[1];
+            roomNo = roomMatch[2];
+        }
+
+        const { fullName, fatherName } = parseNameChunks(nameChunk);
+
+        parsedRows.push({
+            enrollmentNo,
+            fullName,
+            fatherName,
+            fatherMobile,
+            phone,
+            email,
+            category,
+            permanentAddress,
+            roomNo: roomNo || allottedNo,
+            allottedNo,
+        });
+    }
+
+    if (!parsedRows.length) {
+        throw new AppError('Unable to extract student rows from PDF. Please upload CSV with headers instead.', 400);
+    }
+
+    return parsedRows;
+}
+
 // Validation schemas
 const createStudentSchema = z.object({
     enrollmentNo: z.string().min(1),
     fullName: z.string().min(1),
+    fatherName: z.string().optional(),
     email: z.string().email(),
-    phone: z.string().optional(),
+    phone: z.string().min(10, 'Student mobile is required for initial password'),
+    fatherMobile: z.string().optional(),
     department: z.string().min(1),
     year: z.number().int().min(1).max(4),
     section: z.string().optional(),
+    roomNo: z.string().optional(),
+    allottedNo: z.string().optional(),
+    category: z.string().optional(),
+    permanentAddress: z.string().optional(),
     studentType: z.enum(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']),
     photoUrl: z.string().url().optional(),
     bloodGroup: z.string().optional(),
@@ -85,9 +359,19 @@ router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARD
 router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createStudentSchema), async (req, res, next) => {
     try {
         const { password, ...studentData } = req.body;
-        if (password) {
-            studentData.passwordHash = await hashPassword(password);
+        const studentPhone = sanitizePhone(studentData.phone);
+        const guardianPhone = sanitizePhone(studentData.fatherMobile || studentData.emergencyPhone);
+        const initialPassword = studentPhone || guardianPhone;
+
+        if (!initialPassword) {
+            throw new AppError('Student mobile is required to set initial password', 400);
         }
+
+        studentData.phone = studentPhone;
+        studentData.fatherMobile = guardianPhone;
+        studentData.emergencyPhone = guardianPhone;
+        studentData.passwordHash = await hashPassword(initialPassword);
+
         const student = await prisma.student.create({ data: studentData });
 
         // Auto-create card
@@ -113,36 +397,33 @@ router.post('/', authenticate, requireRole('SUPER_ADMIN'), validate(createStuden
 // ── POST /bulk-import — CSV upload ──────────────────────────
 router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.single('file'), async (req, res, next) => {
     try {
-        if (!req.file) throw new AppError('CSV file required', 400);
+        if (!req.file) throw new AppError('CSV or PDF file required', 400);
 
-        const csvData = req.file.buffer.toString('utf-8');
-        const lines = csvData.split('\n').filter((l) => l.trim());
-        if (lines.length < 2) throw new AppError('CSV must have header + data rows', 400);
+        const extension = String(req.file.originalname || '').split('.').pop()?.toLowerCase();
+        const mime = String(req.file.mimetype || '').toLowerCase();
 
-        const headers = lines[0].split(',').map((h) => h.trim());
+        let importedRows = [];
+        if (extension === 'pdf' || mime.includes('pdf')) {
+            const parser = new PDFParse({ data: req.file.buffer });
+            try {
+                const pdf = await parser.getText();
+                importedRows = extractRowsFromPdfText(pdf.text || '');
+            } finally {
+                await parser.destroy();
+            }
+        } else {
+            const csvData = req.file.buffer.toString('utf-8');
+            importedRows = extractRowsFromCsv(csvData);
+        }
+
         const results = { created: 0, skipped: 0, errors: [] };
 
-        for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(',').map((v) => v.trim());
-            const row = {};
-            headers.forEach((h, idx) => { row[h] = values[idx]; });
+        for (let i = 0; i < importedRows.length; i++) {
+            const row = importedRows[i];
 
             try {
-                const { password, ...rowData } = row;
-                const studentData = {
-                    enrollmentNo: rowData.enrollmentNo,
-                    fullName: rowData.fullName,
-                    email: rowData.email,
-                    phone: rowData.phone || null,
-                    department: rowData.department,
-                    year: parseInt(rowData.year),
-                    section: rowData.section || null,
-                    studentType: rowData.studentType,
-                };
-
-                if (password || rowData.password) {
-                    studentData.passwordHash = await hashPassword(password || rowData.password);
-                }
+                const { studentData, passwordSeed } = buildStudentDataFromRow(row);
+                studentData.passwordHash = await hashPassword(passwordSeed);
 
                 const student = await prisma.student.create({
                     data: studentData,
@@ -160,7 +441,7 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
                 if (err.code === 'P2002') {
                     results.skipped++;
                 } else {
-                    results.errors.push({ row: i, error: err.message });
+                    results.errors.push({ row: i + 1, error: err.message });
                 }
             }
         }

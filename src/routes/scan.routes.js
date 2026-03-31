@@ -32,6 +32,8 @@ function resolveDirectionFromScanEvent(scanEvent) {
     return null;
 }
 
+const DIRECTIONAL_SCAN_TYPES = ['ACCESS_SCAN', 'GATE_ENTRY', 'GATE_EXIT'];
+
 const verifyScanSchema = z.object({
     rawToken: z.string().min(1, 'QR token required'),
     gpsLat: z.union([z.string(), z.number()]).optional().nullable(),
@@ -106,11 +108,14 @@ router.get(
                 }
 
                 const faceWhere = { ...baseWhere, timestamp: dateWhere };
-                const scanWhere = { ...baseWhere, scannedAt: dateWhere, result: 'VERIFIED' };
+                const scanWhere = {
+                    ...baseWhere,
+                    scannedAt: dateWhere,
+                    scanType: { in: DIRECTIONAL_SCAN_TYPES },
+                };
 
                 if (direction && ['ENTRY', 'EXIT'].includes(String(direction).toUpperCase())) {
                     faceWhere.direction = String(direction).toUpperCase();
-                    scanWhere.scanType = String(direction).toUpperCase() === 'ENTRY' ? 'GATE_ENTRY' : 'GATE_EXIT';
                 }
 
                 if (search) {
@@ -149,7 +154,13 @@ router.get(
                         where: scanWhere,
                         orderBy: { scannedAt: 'desc' },
                         take: currentLimit,
-                        include: {
+                        select: {
+                            id: true,
+                            scannedAt: true,
+                            result: true,
+                            scanType: true,
+                            gateId: true,
+                            metadata: true,
                             gate: {
                                 select: {
                                     name: true,
@@ -169,7 +180,7 @@ router.get(
                 ]);
 
                 // Map and merge
-                const merged = [
+                const mergedRaw = [
                     ...faceLogs.map((log) => ({
                         id: log.id,
                         student: log.student,
@@ -193,22 +204,29 @@ router.get(
                         studentType: log.student?.studentType,
                         department: log.student?.department,
                         direction: resolveDirectionFromScanEvent(log),
-                        confidence: 100,
+                        confidence: Number(log?.metadata?.confidence || 100),
                         scannedAt: log.scannedAt,
                         gateName: log.gate?.name || log.gateId || 'Main Gate',
-                        result: 'VERIFIED',
-                        scanType: 'QR_SCAN',
+                        result: log.result,
+                        scanType: log.scanType,
                         source: log?.metadata?.source || 'QR_SCAN',
                     })),
-                ].sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
+                ].filter((event) => event.direction === 'ENTRY' || event.direction === 'EXIT');
+
+                const mergedDirectional = direction && ['ENTRY', 'EXIT'].includes(String(direction).toUpperCase())
+                    ? mergedRaw.filter((event) => event.direction === String(direction).toUpperCase())
+                    : mergedRaw;
+
+                const merged = mergedDirectional
+                    .sort((a, b) => new Date(b.scannedAt) - new Date(a.scannedAt))
                     .slice((currentPage - 1) * currentLimit, currentPage * currentLimit);
 
                 return res.json({
                     success: true,
                     data: {
                         events: merged,
-                        total: faceLogs.length + scanLogs.length, // Rough total
-                        pages: Math.ceil((faceLogs.length + scanLogs.length) / currentLimit),
+                        total: mergedDirectional.length,
+                        pages: Math.ceil(mergedDirectional.length / currentLimit),
                         page: currentPage,
                         limit: currentLimit,
                         source: 'HOSTELLER_LOGS_UNIFIED',
@@ -256,6 +274,7 @@ router.get(
                 prisma.scanEvent.findMany({
                     where: {
                         result: 'VERIFIED',
+                        scanType: { in: DIRECTIONAL_SCAN_TYPES },
                         ...(scanTimeWhere ? { scannedAt: scanTimeWhere } : {}),
                         student: {
                             studentType: {
@@ -303,7 +322,7 @@ router.get(
                         },
                     },
                     orderBy: { timestamp: 'desc' },
-                    take: 2000,
+                    take: 1200,
                 }),
             ]);
 
@@ -973,9 +992,22 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
         // Fetch both scan events and face detections
         const [scanEvents, faceLogs] = await Promise.all([
             prisma.scanEvent.findMany({
-                where: { studentId },
+                where: {
+                    studentId,
+                    scanType: {
+                        in: DIRECTIONAL_SCAN_TYPES,
+                    },
+                },
                 orderBy: { scannedAt: 'desc' },
                 take: parseInt(limit),
+                select: {
+                    id: true,
+                    scannedAt: true,
+                    result: true,
+                    scanType: true,
+                    gateId: true,
+                    metadata: true,
+                },
             }),
             prisma.faceDetectionLog.findMany({
                 where: { studentId },

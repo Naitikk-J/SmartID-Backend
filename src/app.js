@@ -41,6 +41,7 @@ let adminRoutes;
 let accessRoutes;
 let qrRoutes;
 let pinkSlipRoutes;
+let alertRoutes;
 let curfewRoutes;
 
 try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
@@ -56,6 +57,7 @@ try { adminRoutes = require('./routes/admin.routes'); } catch (err) { adminRoute
 try { accessRoutes = require('./routes/access.routes'); } catch (err) { accessRoutes = routeFallback('access', err); }
 try { qrRoutes = require('./routes/qr.routes'); } catch (err) { qrRoutes = routeFallback('qr', err); }
 try { pinkSlipRoutes = require('./routes/pink-slip.routes'); } catch (err) { pinkSlipRoutes = routeFallback('pink-slip', err); }
+try { alertRoutes = require('./routes/alerts.routes'); } catch (err) { alertRoutes = routeFallback('alerts', err); }
 try { curfewRoutes = require('./routes/curfew.routes'); } catch (err) { curfewRoutes = routeFallback('curfew', err); }
 
 
@@ -143,6 +145,7 @@ app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/pink-slips', pinkSlipRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/qr', qrRoutes);
+app.use('/api/v1/alerts', alertRoutes);
 app.use('/api/v1/rules/curfew', curfewRoutes);
 
 // ── 8. 404 handler ──────────────────────────────────────────

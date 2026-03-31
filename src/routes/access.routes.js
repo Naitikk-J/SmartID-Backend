@@ -293,6 +293,16 @@ router.get(
                 where.result = status;
             }
 
+            if (search) {
+                where.student = {
+                    OR: [
+                        { fullName: { contains: search, mode: 'insensitive' } },
+                        { enrollmentNo: { contains: search, mode: 'insensitive' } },
+                        { email: { contains: search, mode: 'insensitive' } },
+                    ],
+                };
+            }
+
             if (date) {
                 const start = new Date(date);
                 start.setHours(0, 0, 0, 0);
@@ -304,7 +314,19 @@ router.get(
             const [events, total] = await Promise.all([
                 prisma.scanEvent.findMany({
                     where,
-                    include: { student: true },
+                    select: {
+                        id: true,
+                        scannedAt: true,
+                        result: true,
+                        gateId: true,
+                        metadata: true,
+                        student: {
+                            select: {
+                                fullName: true,
+                                enrollmentNo: true,
+                            },
+                        },
+                    },
                     orderBy: { scannedAt: 'desc' },
                     skip: (page - 1) * limit,
                     take: limit,
@@ -312,18 +334,10 @@ router.get(
                 prisma.scanEvent.count({ where }),
             ]);
 
-            const filtered = search
-                ? events.filter((event) => {
-                    const metadata = event.metadata || {};
-                    const studentName = String(metadata.student_name || metadata.studentName || '').toLowerCase();
-                    return studentName.includes(search.toLowerCase());
-                })
-                : events;
-
             return res.json({
                 success: true,
                 data: {
-                    events: filtered.map((event) => {
+                    events: events.map((event) => {
                         const metadata = event.metadata || {};
                         return {
                             id: event.id,
