@@ -14,6 +14,7 @@
         "test:all": "jest --runInBand --coverage",
         "test:coverage": "jest --coverage",
         "test:report": "jest --coverage --coverageReporters=html && open coverage/index.html",
+        "build": "prisma generate",
         "migrate": "prisma migrate deploy",
         "generate": "prisma generate",
         "seed": "node prisma/seed.js",
