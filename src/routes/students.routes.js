@@ -6,7 +6,6 @@
 const express = require('express');
 const { z } = require('zod');
 const multer = require('multer');
-const { PDFParse } = require('pdf-parse');
 const { authenticate, requireRole, requireModule } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
@@ -404,6 +403,14 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
 
         let importedRows = [];
         if (extension === 'pdf' || mime.includes('pdf')) {
+            // Lazy-load PDF parser so students route can boot even if pdf parser has runtime incompatibilities.
+            let PDFParse;
+            try {
+                ({ PDFParse } = require('pdf-parse'));
+            } catch (err) {
+                throw new AppError('PDF import is temporarily unavailable. Use CSV import for now.', 503, 'PDF_IMPORT_UNAVAILABLE');
+            }
+
             const parser = new PDFParse({ data: req.file.buffer });
             try {
                 const pdf = await parser.getText();
