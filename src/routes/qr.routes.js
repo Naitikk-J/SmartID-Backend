@@ -21,7 +21,7 @@ function getRedis() {
     }
     return redis;
 }
-const QR_TTL_SECONDS = 10;
+const QR_TTL_SECONDS = 20;
 
 async function resolveGate(gateRef) {
     if (!gateRef) return null;
