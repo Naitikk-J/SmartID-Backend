@@ -22,8 +22,7 @@ function getRedis() {
     if (!redisInitAttempted) {
         redisInitAttempted = true;
         try {
-            redis = new Redis({
-                ...config.REDIS_URL,
+            redis = new Redis(config.REDIS_URL, {
                 connectTimeout: 3000, // 3-second connection timeout
                 maxRetriesPerRequest: 1,
                 enableReadyCheck: false,
