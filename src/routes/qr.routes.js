@@ -21,7 +21,10 @@ function getRedis() {
     }
     return redis;
 }
-const QR_TTL_SECONDS = Number(config.ACCESS_QR_TTL_SECONDS || 30);
+const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
+const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
+    ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
+    : 30;
 
 async function resolveGate(gateRef) {
     if (!gateRef) return null;

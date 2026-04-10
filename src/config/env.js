@@ -44,6 +44,7 @@ const envSchema = z.object({
 
     // Dynamic access QR
     ACCESS_QR_TTL_SECONDS: z.coerce.number().int().min(10).max(120).default(30),
+    ACCESS_REQUIRE_GEOFENCE: z.string().default('false'),
 
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),

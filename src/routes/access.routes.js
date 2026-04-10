@@ -27,8 +27,12 @@ function getRedis() {
     return redis;
 }
 
-const QR_TTL_SECONDS = Number(config.ACCESS_QR_TTL_SECONDS || 30);
+const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
+const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
+    ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
+    : 30;
 const ACCESS_REQUIRE_FACE = String(process.env.ACCESS_REQUIRE_FACE || 'false').toLowerCase() === 'true';
+const ACCESS_REQUIRE_GEOFENCE = String(config.ACCESS_REQUIRE_GEOFENCE || 'false').toLowerCase() === 'true';
 
 const geoSchema = z.object({
     gateId: z.string().min(1),
@@ -73,19 +77,70 @@ function haversineDistanceMeters(from, to) {
 }
 
 function parseGeofence(locationValue) {
-    if (!locationValue || typeof locationValue !== 'string') return null;
+    if (!locationValue) return null;
+
+    const normalize = (raw) => {
+        if (!raw || typeof raw !== 'object') return null;
+
+        const centerLat = Number(
+            raw.center_lat
+            ?? raw.centerLat
+            ?? raw.lat
+            ?? raw.latitude
+            ?? raw.center?.lat
+        );
+        const centerLng = Number(
+            raw.center_lng
+            ?? raw.centerLng
+            ?? raw.lng
+            ?? raw.longitude
+            ?? raw.center?.lng
+        );
+        const radius = Number(
+            raw.radius
+            ?? raw.radius_m
+            ?? raw.radiusMeters
+            ?? raw.radius_metres
+            ?? raw.radius_meters
+            ?? raw.gpsRadiusMetres
+        );
+
+        if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng) || !Number.isFinite(radius)) {
+            return null;
+        }
+
+        return {
+            center_lat: centerLat,
+            center_lng: centerLng,
+            radius: Math.min(500, Math.max(20, radius)),
+            shape: raw.shape === 'POLYGON' ? 'POLYGON' : 'CIRCLE',
+            polygon: Array.isArray(raw.polygon) ? raw.polygon : [],
+        };
+    };
+
+    if (typeof locationValue === 'object') {
+        return normalize(locationValue);
+    }
+
+    if (typeof locationValue !== 'string') return null;
+    const trimmed = locationValue.trim();
+    if (!trimmed) return null;
 
     try {
-        const parsed = JSON.parse(locationValue);
-        if (
-            typeof parsed?.center_lat === 'number'
-            && typeof parsed?.center_lng === 'number'
-            && typeof parsed?.radius === 'number'
-        ) {
-            return parsed;
-        }
+        const parsed = JSON.parse(trimmed);
+        return normalize(parsed);
     } catch {
-        return null;
+        // Support legacy "lat,lng" string format.
+        const parts = trimmed.split(',').map((value) => Number(value.trim()));
+        if (parts.length >= 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+            return {
+                center_lat: parts[0],
+                center_lng: parts[1],
+                radius: 100,
+                shape: 'CIRCLE',
+                polygon: [],
+            };
+        }
     }
 
     return null;
@@ -414,19 +469,30 @@ router.post(
             const geofence = parseGeofence(gate.location);
             let geoStatus = 'PASS';
             let failureReason = null;
+            let geofenceDistanceMeters = null;
+            let geofenceEffectiveRadius = null;
 
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(accuracy)) {
                 geoStatus = 'FAIL';
                 failureReason = 'GPS_MISSING';
             } else if (!geofence) {
-                geoStatus = 'FAIL';
-                failureReason = 'GEOFENCE_NOT_CONFIGURED';
+                if (ACCESS_REQUIRE_GEOFENCE) {
+                    geoStatus = 'FAIL';
+                    failureReason = 'GEOFENCE_NOT_CONFIGURED';
+                } else {
+                    geoStatus = 'SKIPPED';
+                }
             } else {
                 const distance = haversineDistanceMeters(
                     { lat: geofence.center_lat, lng: geofence.center_lng },
                     { lat: latitude, lng: longitude },
                 );
-                if (distance > geofence.radius) {
+                const gpsMargin = Math.min(75, Math.max(10, accuracy));
+                const effectiveRadius = geofence.radius + gpsMargin;
+                geofenceDistanceMeters = Math.round(distance);
+                geofenceEffectiveRadius = Math.round(effectiveRadius);
+
+                if (distance > effectiveRadius) {
                     geoStatus = 'FAIL';
                     failureReason = 'OUTSIDE_GEOFENCE';
                 }
@@ -482,8 +548,9 @@ router.post(
             }
 
             const qrStatus = 'PASS';
+            const geoPassed = geoStatus === 'PASS' || geoStatus === 'SKIPPED';
             const overallPass = qrStatus === 'PASS'
-                && geoStatus === 'PASS'
+                && geoPassed
                 && faceStatus === 'PASS'
                 && !suspicious;
 
@@ -515,6 +582,9 @@ router.post(
                         direction: eventType,
                         event_type: eventType,
                         student_name: req.user.email,
+                        geofence_required: ACCESS_REQUIRE_GEOFENCE,
+                        geofence_distance_m: geofenceDistanceMeters,
+                        geofence_effective_radius_m: geofenceEffectiveRadius,
                     },
                 },
             });
