@@ -43,16 +43,8 @@ async function main() {
     console.log('👤 Admin user created.');
 
     // 3. Campus Gates
-    const defaultGateGeofence = JSON.stringify({
-        center_lat: 23.2599,
-        center_lng: 77.4126,
-        radius: 100,
-        shape: 'CIRCLE',
-        polygon: [],
-        seeded: true,
-    });
-    const gate1 = await prisma.gate.create({ data: { name: 'Main Gate 1', location: defaultGateGeofence } });
-    const gate2 = await prisma.gate.create({ data: { name: 'Library Gate', location: defaultGateGeofence } });
+    const gate1 = await prisma.gate.create({ data: { name: 'Main Gate 1', location: null } });
+    const gate2 = await prisma.gate.create({ data: { name: 'Library Gate', location: null } });
     console.log('🚪 Gates created.');
 
     // 4. Exit Rules

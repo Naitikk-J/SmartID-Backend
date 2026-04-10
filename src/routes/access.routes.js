@@ -556,6 +556,8 @@ router.post(
             let failureReason = null;
             let geofenceDistanceMeters = null;
             let geofenceEffectiveRadius = null;
+            let geofenceConfiguredRadius = null;
+            let geofenceGpsMarginMeters = null;
 
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(accuracy)) {
                 geoStatus = 'FAIL';
@@ -572,10 +574,13 @@ router.post(
                     { lat: geofence.center_lat, lng: geofence.center_lng },
                     { lat: latitude, lng: longitude },
                 );
-                const gpsMargin = Math.min(75, Math.max(10, accuracy));
-                const effectiveRadius = geofence.radius + gpsMargin;
+                geofenceConfiguredRadius = Math.round(geofence.radius);
+                const gpsMargin = Math.min(150, Math.max(25, Math.round(accuracy * 1.25)));
+                const safetyBuffer = 20;
+                const effectiveRadius = geofence.radius + gpsMargin + safetyBuffer;
                 geofenceDistanceMeters = Math.round(distance);
                 geofenceEffectiveRadius = Math.round(effectiveRadius);
+                geofenceGpsMarginMeters = gpsMargin;
 
                 if (distance > effectiveRadius) {
                     geoStatus = 'FAIL';
@@ -641,6 +646,14 @@ router.post(
 
             const overallStatus = overallPass ? 'SUCCESS' : 'FAIL';
             const resultCode = overallPass ? 'VERIFIED' : (failureReason || 'ACCESS_DENIED');
+            const geofenceOutsideByMeters = Number.isFinite(geofenceDistanceMeters) && Number.isFinite(geofenceEffectiveRadius)
+                ? Math.max(0, geofenceDistanceMeters - geofenceEffectiveRadius)
+                : null;
+            const resultMessage = overallPass
+                ? 'Access granted'
+                : failureReason === 'OUTSIDE_GEOFENCE' && Number.isFinite(geofenceOutsideByMeters)
+                    ? `Outside geofence by ${geofenceOutsideByMeters}m. Ask admin to update gate geofence from Hosteller page.`
+                    : (failureReason || 'Access denied');
 
             const scanEvent = await prisma.scanEvent.create({
                 data: {
@@ -671,6 +684,9 @@ router.post(
                         geofence_required: ACCESS_REQUIRE_GEOFENCE,
                         geofence_distance_m: geofenceDistanceMeters,
                         geofence_effective_radius_m: geofenceEffectiveRadius,
+                        geofence_configured_radius_m: geofenceConfiguredRadius,
+                        geofence_gps_margin_m: geofenceGpsMarginMeters,
+                        geofence_outside_by_m: geofenceOutsideByMeters,
                     },
                 },
             });
@@ -691,7 +707,7 @@ router.post(
                 data: {
                     result: resultCode,
                     badge: overallPass ? 'GREEN' : 'RED',
-                    message: overallPass ? 'Access granted' : (failureReason || 'Access denied'),
+                    message: resultMessage,
                     gate_id: gate.id,
                     gate_name: gate.name,
                     qr_status: qrStatus,
@@ -699,6 +715,11 @@ router.post(
                     face_status: faceStatus,
                     overall_status: overallStatus,
                     location_trust_score: locationTrustScore,
+                    geofence_distance_m: geofenceDistanceMeters,
+                    geofence_effective_radius_m: geofenceEffectiveRadius,
+                    geofence_configured_radius_m: geofenceConfiguredRadius,
+                    geofence_gps_margin_m: geofenceGpsMarginMeters,
+                    geofence_outside_by_m: geofenceOutsideByMeters,
                     suspicious,
                     scanEventId: scanEvent.id,
                 },
