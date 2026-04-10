@@ -1,5 +1,4 @@
 const express = require('express');
-const crypto = require('crypto');
 const { z } = require('zod');
 const Redis = require('ioredis');
 
@@ -10,6 +9,7 @@ const { validate } = require('../middleware/validate');
 const { scanRateLimit } = require('../middleware/rateLimit');
 const faceAiService = require('../services/faceAi.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
+const { createAccessQrToken, verifyAccessQrToken } = require('../services/accessQrToken.service');
 
 const router = express.Router();
 
@@ -19,6 +19,10 @@ let redisInitAttempted = false;
 const REDIS_OP_TIMEOUT_MS = 2000;
 
 function getRedis() {
+    if (!config.REDIS_URL) {
+        return null;
+    }
+
     // If we haven't attempted to connect yet, create with timeout options
     if (!redisInitAttempted) {
         redisInitAttempted = true;
@@ -179,23 +183,6 @@ function withTimeout(promise, timeoutMs, label) {
     });
 }
 
-async function safeRedisSet(key, value, ttlSeconds) {
-    const redisClient = getRedis();
-    if (!redisClient) return false;
-
-    try {
-        await withTimeout(
-            redisClient.set(key, value, 'EX', ttlSeconds),
-            REDIS_OP_TIMEOUT_MS,
-            'Redis SET',
-        );
-        return true;
-    } catch (err) {
-        console.warn('Redis SET failed:', err.message);
-        return false;
-    }
-}
-
 async function safeRedisGet(key) {
     const redisClient = getRedis();
     if (!redisClient) {
@@ -234,27 +221,19 @@ async function generateGateQr(gateId, createdById) {
     const gate = await resolveGate(gateId);
     if (!gate) return null;
 
-    const token = crypto.randomBytes(24).toString('hex');
-    const expiresAt = new Date(Date.now() + (QR_TTL_SECONDS * 1000));
-
-    const persisted = await safeRedisSet(
-        `qr:dynamic:${token}`,
-        JSON.stringify({
-            gateId: gate.id,
-            gateName: gate.name,
-            createdById,
-            expiresAt: expiresAt.toISOString(),
-        }),
-        QR_TTL_SECONDS,
-    );
-
-    return {
-        token,
+    const qr = createAccessQrToken({
         gateId: gate.id,
         gateName: gate.name,
-        expiresAt,
+        createdById,
         ttlSeconds: QR_TTL_SECONDS,
-        persisted,
+    });
+
+    return {
+        token: qr.token,
+        gateId: gate.id,
+        gateName: gate.name,
+        expiresAt: qr.expiresAt,
+        ttlSeconds: QR_TTL_SECONDS,
     };
 }
 
@@ -303,14 +282,6 @@ router.get(
             const qr = await generateGateQr(gateRef, req.user.id);
             if (!qr) {
                 return res.status(404).json({ success: false, error: 'Gate not found' });
-            }
-
-            if (!qr.persisted) {
-                return res.status(503).json({
-                    success: false,
-                    error: 'QR service temporarily unavailable. Please retry.',
-                    code: 'QR_CACHE_UNAVAILABLE',
-                });
             }
 
             return res.json({
@@ -520,28 +491,57 @@ router.post(
                 });
             }
 
-            const {
-                value: qrPayloadRaw,
-                cacheUnavailable,
-            } = await safeRedisGet(`qr:dynamic:${qrToken}`);
+            let qrPayload = null;
+            let qrSource = 'STATELESS';
+            const statelessToken = verifyAccessQrToken(qrToken);
 
-            if (!qrPayloadRaw) {
-                if (cacheUnavailable) {
-                    return res.status(503).json({
-                        success: false,
-                        error: 'QR verification temporarily unavailable. Please retry.',
-                        code: 'QR_VALIDATION_UNAVAILABLE',
-                    });
-                }
-
+            if (statelessToken.valid) {
+                qrPayload = {
+                    gateId: statelessToken.payload.gateId,
+                    gateName: statelessToken.payload.gateName,
+                    expiresAt: statelessToken.payload.expiresAt
+                        ? statelessToken.payload.expiresAt.toISOString()
+                        : null,
+                };
+            } else if (statelessToken.format === 'stateless') {
                 return res.status(400).json({
                     success: false,
                     error: 'QR expired or invalid',
                     code: 'QR_EXPIRED',
                 });
-            }
+            } else {
+                qrSource = 'REDIS_LEGACY';
+                const {
+                    value: qrPayloadRaw,
+                    cacheUnavailable,
+                } = await safeRedisGet(`qr:dynamic:${qrToken}`);
 
-            const qrPayload = JSON.parse(qrPayloadRaw);
+                if (!qrPayloadRaw) {
+                    if (cacheUnavailable) {
+                        return res.status(400).json({
+                            success: false,
+                            error: 'QR expired or invalid',
+                            code: 'QR_EXPIRED',
+                        });
+                    }
+
+                    return res.status(400).json({
+                        success: false,
+                        error: 'QR expired or invalid',
+                        code: 'QR_EXPIRED',
+                    });
+                }
+
+                try {
+                    qrPayload = JSON.parse(qrPayloadRaw);
+                } catch {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'QR expired or invalid',
+                        code: 'QR_EXPIRED',
+                    });
+                }
+            }
             const gate = await resolveGate(qrPayload.gateId || req.body.gate_id);
             if (!gate) {
                 return res.status(404).json({
@@ -667,6 +667,7 @@ router.post(
                         direction: eventType,
                         event_type: eventType,
                         student_name: req.user.email,
+                        qr_source: qrSource,
                         geofence_required: ACCESS_REQUIRE_GEOFENCE,
                         geofence_distance_m: geofenceDistanceMeters,
                         geofence_effective_radius_m: geofenceEffectiveRadius,

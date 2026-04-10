@@ -29,6 +29,10 @@ module.exports.prisma = null; // Will use getPrismaForSocket when needed
 // ── Redis Client (singleton, lazy-loaded) ──────────────────
 let redisInstance = null;
 function getRedisForSocket() {
+    if (!config.REDIS_URL) {
+        return null;
+    }
+
     if (!redisInstance) {
         try {
             redisInstance = new Redis(config.REDIS_URL);

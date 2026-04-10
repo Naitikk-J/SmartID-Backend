@@ -1,0 +1,113 @@
+const crypto = require('crypto');
+const config = require('../config/env');
+
+const ACCESS_QR_TOKEN_VERSION = 'aq1';
+
+function base64UrlEncode(input) {
+    return Buffer.from(input)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+
+function base64UrlDecode(input) {
+    const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+    return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function getSigningSecret() {
+    return String(process.env.ACCESS_QR_SIGNING_SECRET || config.JWT_SECRET || '');
+}
+
+function signPayload(payloadSegment) {
+    const secret = getSigningSecret();
+    return base64UrlEncode(
+        crypto.createHmac('sha256', secret).update(payloadSegment).digest(),
+    );
+}
+
+function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds }) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expSec = nowSec + Math.max(1, Number(ttlSeconds) || 30);
+
+    const payload = {
+        v: ACCESS_QR_TOKEN_VERSION,
+        typ: 'access_qr',
+        gid: String(gateId),
+        gnm: gateName ? String(gateName) : null,
+        cb: createdById ? String(createdById) : null,
+        iat: nowSec,
+        exp: expSec,
+        n: crypto.randomBytes(8).toString('hex'),
+    };
+
+    const payloadSegment = base64UrlEncode(JSON.stringify(payload));
+    const signatureSegment = signPayload(payloadSegment);
+
+    return {
+        token: `${ACCESS_QR_TOKEN_VERSION}.${payloadSegment}.${signatureSegment}`,
+        expiresAt: new Date(expSec * 1000),
+    };
+}
+
+function verifyAccessQrToken(token) {
+    if (typeof token !== 'string') {
+        return { format: 'unknown', valid: false, reason: 'MALFORMED' };
+    }
+
+    const trimmed = token.trim();
+    if (!trimmed.startsWith(`${ACCESS_QR_TOKEN_VERSION}.`)) {
+        return { format: 'unknown', valid: false, reason: 'UNSUPPORTED_FORMAT' };
+    }
+
+    const segments = trimmed.split('.');
+    if (segments.length !== 3) {
+        return { format: 'stateless', valid: false, reason: 'MALFORMED' };
+    }
+
+    const [, payloadSegment, signatureSegment] = segments;
+    const expectedSignature = signPayload(payloadSegment);
+
+    const providedBuffer = Buffer.from(signatureSegment);
+    const expectedBuffer = Buffer.from(expectedSignature);
+
+    if (providedBuffer.length !== expectedBuffer.length
+        || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+        return { format: 'stateless', valid: false, reason: 'INVALID_SIGNATURE' };
+    }
+
+    let payload;
+    try {
+        payload = JSON.parse(base64UrlDecode(payloadSegment));
+    } catch {
+        return { format: 'stateless', valid: false, reason: 'MALFORMED' };
+    }
+
+    if (payload?.typ !== 'access_qr' || !payload?.gid) {
+        return { format: 'stateless', valid: false, reason: 'MALFORMED' };
+    }
+
+    const exp = Number(payload.exp);
+    if (!Number.isFinite(exp) || exp <= Math.floor(Date.now() / 1000)) {
+        return { format: 'stateless', valid: false, reason: 'EXPIRED' };
+    }
+
+    return {
+        format: 'stateless',
+        valid: true,
+        payload: {
+            gateId: String(payload.gid),
+            gateName: payload.gnm ? String(payload.gnm) : null,
+            createdById: payload.cb ? String(payload.cb) : null,
+            expiresAt: new Date(exp * 1000),
+        },
+    };
+}
+
+module.exports = {
+    ACCESS_QR_TOKEN_VERSION,
+    createAccessQrToken,
+    verifyAccessQrToken,
+};
