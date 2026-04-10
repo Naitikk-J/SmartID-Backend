@@ -439,6 +439,20 @@ router.post(
     scanRateLimit,
     validate(accessScanSchema),
     async (req, res, next) => {
+        // Request-level timeout: abort if endpoint takes > 5 seconds
+        const requestTimeout = setTimeout(() => {
+            if (!res.headersSent) {
+                res.status(504).json({
+                    success: false,
+                    error: 'Request timeout',
+                    code: 'REQUEST_TIMEOUT',
+                });
+            }
+        }, 5000);
+
+        // Auto-cleanup timeout on response finish
+        res.on('finish', () => clearTimeout(requestTimeout));
+
         try {
             const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
             const latitude = Number(req.body.latitude);
