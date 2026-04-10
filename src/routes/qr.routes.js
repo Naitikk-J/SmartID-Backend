@@ -11,6 +11,7 @@ const router = express.Router();
 // Redis client with connection timeout (prevents hanging on first request)
 let redis = null;
 let redisInitAttempted = false;
+const REDIS_OP_TIMEOUT_MS = 2000;
 
 function getRedis() {
     // If we haven't attempted to connect yet, create with timeout options
@@ -21,6 +22,9 @@ function getRedis() {
                 connectTimeout: 3000, // 3-second connection timeout
                 maxRetriesPerRequest: 1,
                 enableReadyCheck: false,
+                enableOfflineQueue: false,
+                commandTimeout: REDIS_OP_TIMEOUT_MS,
+                retryStrategy: () => null,
             });
             redis.on('error', (err) => {
                 console.warn('Redis error:', err.message);
@@ -32,6 +36,42 @@ function getRedis() {
     }
     return redis;
 }
+
+function withTimeout(promise, timeoutMs, label) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`${label} timed out`));
+        }, timeoutMs);
+
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+async function safeRedisSet(key, value, ttlSeconds) {
+    const redisClient = getRedis();
+    if (!redisClient) return false;
+
+    try {
+        await withTimeout(
+            redisClient.set(key, value, 'EX', ttlSeconds),
+            REDIS_OP_TIMEOUT_MS,
+            'Redis SET',
+        );
+        return true;
+    } catch (err) {
+        console.warn('Redis SET failed:', err.message);
+        return false;
+    }
+}
+
 const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
 const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
     ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
@@ -68,14 +108,19 @@ router.get(
 
             const token = crypto.randomBytes(24).toString('hex');
             const expiresAt = new Date(Date.now() + (QR_TTL_SECONDS * 1000));
-            const redisClient = getRedis();
-            if (redisClient) {
-                await redisClient.set(
-                    `qr:dynamic:${token}`,
-                    JSON.stringify({ gateId: gate.id, gateName: gate.name, expiresAt: expiresAt.toISOString() }),
-                    'EX',
-                    QR_TTL_SECONDS,
-                );
+
+            const persisted = await safeRedisSet(
+                `qr:dynamic:${token}`,
+                JSON.stringify({ gateId: gate.id, gateName: gate.name, expiresAt: expiresAt.toISOString() }),
+                QR_TTL_SECONDS,
+            );
+
+            if (!persisted) {
+                return res.status(503).json({
+                    success: false,
+                    error: 'QR service temporarily unavailable. Please retry.',
+                    code: 'QR_CACHE_UNAVAILABLE',
+                });
             }
 
             return res.json({

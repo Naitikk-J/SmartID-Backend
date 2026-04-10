@@ -16,6 +16,7 @@ const router = express.Router();
 // Redis client with connection timeout (prevents hanging on first request)
 let redis = null;
 let redisInitAttempted = false;
+const REDIS_OP_TIMEOUT_MS = 2000;
 
 function getRedis() {
     // If we haven't attempted to connect yet, create with timeout options
@@ -26,6 +27,9 @@ function getRedis() {
                 connectTimeout: 3000, // 3-second connection timeout
                 maxRetriesPerRequest: 1,
                 enableReadyCheck: false,
+                enableOfflineQueue: false,
+                commandTimeout: REDIS_OP_TIMEOUT_MS,
+                retryStrategy: () => null,
             });
             redis.on('error', (err) => {
                 console.warn('Redis error:', err.message);
@@ -157,6 +161,60 @@ function parseGeofence(locationValue) {
     return null;
 }
 
+function withTimeout(promise, timeoutMs, label) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`${label} timed out`));
+        }, timeoutMs);
+
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+async function safeRedisSet(key, value, ttlSeconds) {
+    const redisClient = getRedis();
+    if (!redisClient) return false;
+
+    try {
+        await withTimeout(
+            redisClient.set(key, value, 'EX', ttlSeconds),
+            REDIS_OP_TIMEOUT_MS,
+            'Redis SET',
+        );
+        return true;
+    } catch (err) {
+        console.warn('Redis SET failed:', err.message);
+        return false;
+    }
+}
+
+async function safeRedisGet(key) {
+    const redisClient = getRedis();
+    if (!redisClient) {
+        return { value: null, cacheUnavailable: true };
+    }
+
+    try {
+        const value = await withTimeout(
+            redisClient.get(key),
+            REDIS_OP_TIMEOUT_MS,
+            'Redis GET',
+        );
+        return { value, cacheUnavailable: false };
+    } catch (err) {
+        console.warn('Redis GET failed:', err.message);
+        return { value: null, cacheUnavailable: true };
+    }
+}
+
 async function resolveGate(gateRef) {
     if (!gateRef) return null;
 
@@ -179,20 +237,16 @@ async function generateGateQr(gateId, createdById) {
     const token = crypto.randomBytes(24).toString('hex');
     const expiresAt = new Date(Date.now() + (QR_TTL_SECONDS * 1000));
 
-    const redisClient = getRedis();
-    if (redisClient) {
-        await redisClient.set(
-            `qr:dynamic:${token}`,
-            JSON.stringify({
-                gateId: gate.id,
-                gateName: gate.name,
-                createdById,
-                expiresAt: expiresAt.toISOString(),
-            }),
-            'EX',
-            QR_TTL_SECONDS,
-        );
-    }
+    const persisted = await safeRedisSet(
+        `qr:dynamic:${token}`,
+        JSON.stringify({
+            gateId: gate.id,
+            gateName: gate.name,
+            createdById,
+            expiresAt: expiresAt.toISOString(),
+        }),
+        QR_TTL_SECONDS,
+    );
 
     return {
         token,
@@ -200,6 +254,7 @@ async function generateGateQr(gateId, createdById) {
         gateName: gate.name,
         expiresAt,
         ttlSeconds: QR_TTL_SECONDS,
+        persisted,
     };
 }
 
@@ -248,6 +303,14 @@ router.get(
             const qr = await generateGateQr(gateRef, req.user.id);
             if (!qr) {
                 return res.status(404).json({ success: false, error: 'Gate not found' });
+            }
+
+            if (!qr.persisted) {
+                return res.status(503).json({
+                    success: false,
+                    error: 'QR service temporarily unavailable. Please retry.',
+                    code: 'QR_CACHE_UNAVAILABLE',
+                });
             }
 
             return res.json({
@@ -439,20 +502,6 @@ router.post(
     scanRateLimit,
     validate(accessScanSchema),
     async (req, res, next) => {
-        // Request-level timeout: abort if endpoint takes > 5 seconds
-        const requestTimeout = setTimeout(() => {
-            if (!res.headersSent) {
-                res.status(504).json({
-                    success: false,
-                    error: 'Request timeout',
-                    code: 'REQUEST_TIMEOUT',
-                });
-            }
-        }, 15000);
-
-        // Auto-cleanup timeout on response finish
-        res.on('finish', () => clearTimeout(requestTimeout));
-
         try {
             const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
             const latitude = Number(req.body.latitude);
@@ -471,9 +520,20 @@ router.post(
                 });
             }
 
-            const redisClient = getRedis();
-            const qrPayloadRaw = redisClient ? await redisClient.get(`qr:dynamic:${qrToken}`) : null;
+            const {
+                value: qrPayloadRaw,
+                cacheUnavailable,
+            } = await safeRedisGet(`qr:dynamic:${qrToken}`);
+
             if (!qrPayloadRaw) {
+                if (cacheUnavailable) {
+                    return res.status(503).json({
+                        success: false,
+                        error: 'QR verification temporarily unavailable. Please retry.',
+                        code: 'QR_VALIDATION_UNAVAILABLE',
+                    });
+                }
+
                 return res.status(400).json({
                     success: false,
                     error: 'QR expired or invalid',
