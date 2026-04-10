@@ -448,7 +448,7 @@ router.post(
                     code: 'REQUEST_TIMEOUT',
                 });
             }
-        }, 5000);
+        }, 15000);
 
         // Auto-cleanup timeout on response finish
         res.on('finish', () => clearTimeout(requestTimeout));
