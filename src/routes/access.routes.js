@@ -221,11 +221,14 @@ async function generateGateQr(gateId, createdById) {
     const gate = await resolveGate(gateId);
     if (!gate) return null;
 
+    const gateGeofence = parseGeofence(gate.location);
+
     const qr = createAccessQrToken({
         gateId: gate.id,
         gateName: gate.name,
         createdById,
         ttlSeconds: QR_TTL_SECONDS,
+        geofence: gateGeofence,
     });
 
     return {
@@ -499,6 +502,7 @@ router.post(
                 qrPayload = {
                     gateId: statelessToken.payload.gateId,
                     gateName: statelessToken.payload.gateName,
+                    geofence: statelessToken.payload.geofence || null,
                     expiresAt: statelessToken.payload.expiresAt
                         ? statelessToken.payload.expiresAt.toISOString()
                         : null,
@@ -542,8 +546,12 @@ router.post(
                     });
                 }
             }
-            const gate = await resolveGate(qrPayload.gateId || req.body.gate_id);
-            if (!gate) {
+
+            let gateId = String(qrPayload.gateId || req.body.gate_id || '').trim();
+            let gateName = qrPayload.gateName ? String(qrPayload.gateName) : null;
+            let geofence = qrPayload.geofence || null;
+
+            if (!gateId) {
                 return res.status(404).json({
                     success: false,
                     error: 'Gate not found',
@@ -551,7 +559,33 @@ router.post(
                 });
             }
 
-            const geofence = parseGeofence(gate.location);
+            if (qrSource === 'REDIS_LEGACY' || !geofence || !gateName) {
+                let gate;
+                try {
+                    gate = await withTimeout(resolveGate(gateId), 2500, 'Gate lookup');
+                } catch {
+                    return res.status(503).json({
+                        success: false,
+                        error: 'Gate lookup is taking too long. Please scan again.',
+                        code: 'GATE_LOOKUP_TIMEOUT',
+                    });
+                }
+
+                if (!gate) {
+                    return res.status(404).json({
+                        success: false,
+                        error: 'Gate not found',
+                        code: 'GATE_NOT_FOUND',
+                    });
+                }
+
+                gateId = gate.id;
+                gateName = gate.name;
+                if (!geofence) {
+                    geofence = parseGeofence(gate.location);
+                }
+            }
+
             let geoStatus = 'PASS';
             let failureReason = null;
             let geofenceDistanceMeters = null;
@@ -588,13 +622,22 @@ router.post(
                 }
             }
 
-            const previous = await prisma.scanEvent.findFirst({
-                where: {
-                    scannedById: req.user.id,
-                    scanType: 'ACCESS_SCAN',
-                },
-                orderBy: { scannedAt: 'desc' },
-            });
+            let previous = null;
+            try {
+                previous = await withTimeout(
+                    prisma.scanEvent.findFirst({
+                        where: {
+                            scannedById: req.user.id,
+                            scanType: 'ACCESS_SCAN',
+                        },
+                        orderBy: { scannedAt: 'desc' },
+                    }),
+                    1200,
+                    'Previous scan lookup',
+                );
+            } catch (err) {
+                console.warn('Previous scan lookup skipped:', err.message);
+            }
 
             let suspicious = false;
             let locationTrustScore = 100;
@@ -655,52 +698,63 @@ router.post(
                     ? `Outside geofence by ${geofenceOutsideByMeters}m. Ask admin to update gate geofence from Hosteller page.`
                     : (failureReason || 'Access denied');
 
-            const scanEvent = await prisma.scanEvent.create({
-                data: {
-                    scannedById: req.user.id,
-                    studentId: req.user.role === 'STUDENT' ? req.user.id : undefined,
+            let scanEvent = null;
+            try {
+                scanEvent = await withTimeout(
+                    prisma.scanEvent.create({
+                        data: {
+                            scannedById: req.user.id,
+                            studentId: req.user.role === 'STUDENT' ? req.user.id : undefined,
+                            scanType: 'ACCESS_SCAN',
+                            result: resultCode,
+                            gpsLat: latitude,
+                            gpsLng: longitude,
+                            gateId,
+                            scannedAt: timestamp,
+                            metadata: {
+                                qr_token: qrToken,
+                                qr_status: qrStatus,
+                                geo_status: geoStatus,
+                                face_status: faceStatus,
+                                overall_status: overallStatus,
+                                failure_reason: failureReason,
+                                suspicious,
+                                location_trust_score: locationTrustScore,
+                                latitude,
+                                longitude,
+                                accuracy,
+                                direction: eventType,
+                                event_type: eventType,
+                                student_name: req.user.email,
+                                qr_source: qrSource,
+                                geofence_required: ACCESS_REQUIRE_GEOFENCE,
+                                geofence_distance_m: geofenceDistanceMeters,
+                                geofence_effective_radius_m: geofenceEffectiveRadius,
+                                geofence_configured_radius_m: geofenceConfiguredRadius,
+                                geofence_gps_margin_m: geofenceGpsMarginMeters,
+                                geofence_outside_by_m: geofenceOutsideByMeters,
+                            },
+                        },
+                    }),
+                    2500,
+                    'Scan event write',
+                );
+            } catch (err) {
+                console.warn('Scan event write skipped:', err.message);
+            }
+
+            if (scanEvent) {
+                emitScanEvent({
+                    scanEvent,
+                    student: {
+                        fullName: req.user.email,
+                        enrollmentNo: 'APP_USER',
+                        department: 'HOSTEL',
+                    },
                     scanType: 'ACCESS_SCAN',
                     result: resultCode,
-                    gpsLat: latitude,
-                    gpsLng: longitude,
-                    gateId: gate.id,
-                    scannedAt: timestamp,
-                    metadata: {
-                        qr_token: qrToken,
-                        qr_status: qrStatus,
-                        geo_status: geoStatus,
-                        face_status: faceStatus,
-                        overall_status: overallStatus,
-                        failure_reason: failureReason,
-                        suspicious,
-                        location_trust_score: locationTrustScore,
-                        latitude,
-                        longitude,
-                        accuracy,
-                        direction: eventType,
-                        event_type: eventType,
-                        student_name: req.user.email,
-                        qr_source: qrSource,
-                        geofence_required: ACCESS_REQUIRE_GEOFENCE,
-                        geofence_distance_m: geofenceDistanceMeters,
-                        geofence_effective_radius_m: geofenceEffectiveRadius,
-                        geofence_configured_radius_m: geofenceConfiguredRadius,
-                        geofence_gps_margin_m: geofenceGpsMarginMeters,
-                        geofence_outside_by_m: geofenceOutsideByMeters,
-                    },
-                },
-            });
-
-            emitScanEvent({
-                scanEvent,
-                student: {
-                    fullName: req.user.email,
-                    enrollmentNo: 'APP_USER',
-                    department: 'HOSTEL',
-                },
-                scanType: 'ACCESS_SCAN',
-                result: resultCode,
-            });
+                });
+            }
 
             return res.json({
                 success: overallPass,
@@ -708,8 +762,8 @@ router.post(
                     result: resultCode,
                     badge: overallPass ? 'GREEN' : 'RED',
                     message: resultMessage,
-                    gate_id: gate.id,
-                    gate_name: gate.name,
+                    gate_id: gateId,
+                    gate_name: gateName || 'Unknown Gate',
                     qr_status: qrStatus,
                     geo_status: geoStatus,
                     face_status: faceStatus,
@@ -721,7 +775,7 @@ router.post(
                     geofence_gps_margin_m: geofenceGpsMarginMeters,
                     geofence_outside_by_m: geofenceOutsideByMeters,
                     suspicious,
-                    scanEventId: scanEvent.id,
+                    scanEventId: scanEvent?.id || null,
                 },
             });
         } catch (err) {

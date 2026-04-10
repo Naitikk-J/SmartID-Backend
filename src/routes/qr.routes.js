@@ -12,6 +12,55 @@ const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
     ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
     : 30;
 
+function parseGeofence(locationValue) {
+    if (!locationValue) return null;
+
+    const normalize = (raw) => {
+        if (!raw || typeof raw !== 'object') return null;
+
+        const centerLat = Number(
+            raw.center_lat
+            ?? raw.centerLat
+            ?? raw.lat
+            ?? raw.latitude
+            ?? raw.center?.lat,
+        );
+        const centerLng = Number(
+            raw.center_lng
+            ?? raw.centerLng
+            ?? raw.lng
+            ?? raw.longitude
+            ?? raw.center?.lng,
+        );
+        const radius = Number(raw.radius ?? raw.radius_m ?? raw.radiusMeters);
+
+        if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng) || !Number.isFinite(radius)) {
+            return null;
+        }
+
+        return {
+            center_lat: centerLat,
+            center_lng: centerLng,
+            radius: Math.min(500, Math.max(20, radius)),
+            shape: raw.shape === 'POLYGON' ? 'POLYGON' : 'CIRCLE',
+        };
+    };
+
+    if (typeof locationValue === 'object') {
+        return normalize(locationValue);
+    }
+
+    if (typeof locationValue !== 'string') return null;
+    const trimmed = locationValue.trim();
+    if (!trimmed) return null;
+
+    try {
+        return normalize(JSON.parse(trimmed));
+    } catch {
+        return null;
+    }
+}
+
 async function resolveGate(gateRef) {
     if (!gateRef) return null;
 
@@ -41,11 +90,14 @@ router.get(
                 return res.status(404).json({ success: false, error: 'Gate not found' });
             }
 
+            const gateGeofence = parseGeofence(gate.location);
+
             const qr = createAccessQrToken({
                 gateId: gate.id,
                 gateName: gate.name,
                 createdById: req.user.id,
                 ttlSeconds: QR_TTL_SECONDS,
+                geofence: gateGeofence,
             });
 
             return res.json({

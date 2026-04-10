@@ -28,9 +28,30 @@ function signPayload(payloadSegment) {
     );
 }
 
-function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds }) {
+function normalizeGeofence(geofence) {
+    if (!geofence || typeof geofence !== 'object') return null;
+
+    const centerLat = Number(geofence.center_lat ?? geofence.lat);
+    const centerLng = Number(geofence.center_lng ?? geofence.lng);
+    const radius = Number(geofence.radius ?? geofence.r);
+    const shape = geofence.shape === 'POLYGON' ? 'POLYGON' : 'CIRCLE';
+
+    if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng) || !Number.isFinite(radius)) {
+        return null;
+    }
+
+    return {
+        center_lat: centerLat,
+        center_lng: centerLng,
+        radius,
+        shape,
+    };
+}
+
+function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds, geofence }) {
     const nowSec = Math.floor(Date.now() / 1000);
     const expSec = nowSec + Math.max(1, Number(ttlSeconds) || 30);
+    const normalizedGeofence = normalizeGeofence(geofence);
 
     const payload = {
         v: ACCESS_QR_TOKEN_VERSION,
@@ -41,6 +62,14 @@ function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds }) {
         iat: nowSec,
         exp: expSec,
         n: crypto.randomBytes(8).toString('hex'),
+        g: normalizedGeofence
+            ? {
+                lat: normalizedGeofence.center_lat,
+                lng: normalizedGeofence.center_lng,
+                r: normalizedGeofence.radius,
+                s: normalizedGeofence.shape,
+            }
+            : null,
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
@@ -102,6 +131,14 @@ function verifyAccessQrToken(token) {
             gateName: payload.gnm ? String(payload.gnm) : null,
             createdById: payload.cb ? String(payload.cb) : null,
             expiresAt: new Date(exp * 1000),
+            geofence: payload.g
+                ? normalizeGeofence({
+                    center_lat: payload.g.lat,
+                    center_lng: payload.g.lng,
+                    radius: payload.g.r,
+                    shape: payload.g.s,
+                })
+                : null,
         },
     };
 }
