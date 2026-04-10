@@ -8,17 +8,24 @@ const config = require('../config/env');
 const { AppError } = require('./errorHandler');
 const Redis = require('ioredis');
 
+const REDIS_AUTH_TIMEOUT_MS = 1000;
+
 // Lazy-load Redis to prevent module load failures
 let redis = null;
 function getRedis() {
+    if (!config.REDIS_URL) {
+        return null;
+    }
+
     if (!redis) {
         try {
             redis = new Redis(config.REDIS_URL, {
+                connectTimeout: 1500,
                 maxRetriesPerRequest: 1,
-                retryStrategy: (times) => {
-                    if (times > 3) return null;
-                    return Math.min(times * 50, 2000);
-                }
+                enableReadyCheck: false,
+                enableOfflineQueue: false,
+                commandTimeout: REDIS_AUTH_TIMEOUT_MS,
+                retryStrategy: () => null,
             });
 
             redis.on('error', (err) => {
@@ -34,6 +41,24 @@ function getRedis() {
         }
     }
     return redis;
+}
+
+function withTimeout(promise, timeoutMs, label) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(`${label} timed out`));
+        }, timeoutMs);
+
+        promise
+            .then((value) => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch((err) => {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
 }
 
 /**
@@ -55,7 +80,11 @@ const authenticate = async (req, res, next) => {
         try {
             const redisClient = getRedis();
             if (redisClient) {
-                const isBlacklisted = await redisClient.get(`blacklist:${token}`);
+                const isBlacklisted = await withTimeout(
+                    redisClient.get(`blacklist:${token}`),
+                    REDIS_AUTH_TIMEOUT_MS,
+                    'Redis blacklist check',
+                );
                 if (isBlacklisted) {
                     throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
                 }
