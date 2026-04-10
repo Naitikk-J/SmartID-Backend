@@ -42,6 +42,9 @@ const envSchema = z.object({
     FACE_AI_URL: z.string().default('http://localhost:8001'),
     FACE_AI_TIMEOUT_MS: z.coerce.number().default(10000),
 
+    // Dynamic access QR
+    ACCESS_QR_TTL_SECONDS: z.coerce.number().int().min(10).max(120).default(30),
+
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),
 });
