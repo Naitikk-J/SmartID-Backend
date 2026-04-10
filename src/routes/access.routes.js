@@ -13,14 +13,26 @@ const { emitScanEvent } = require('../sockets/scanFeed.socket');
 
 const router = express.Router();
 
-// Lazy-load Redis to prevent module load failures
+// Redis client with connection timeout (prevents hanging on first request)
 let redis = null;
+let redisInitAttempted = false;
+
 function getRedis() {
-    if (!redis) {
+    // If we haven't attempted to connect yet, create with timeout options
+    if (!redisInitAttempted) {
+        redisInitAttempted = true;
         try {
-            redis = new Redis(config.REDIS_URL);
+            redis = new Redis({
+                ...config.REDIS_URL,
+                connectTimeout: 3000, // 3-second connection timeout
+                maxRetriesPerRequest: 1,
+                enableReadyCheck: false,
+            });
+            redis.on('error', (err) => {
+                console.warn('Redis error:', err.message);
+            });
         } catch (err) {
-            console.warn('Redis connection failed, QR validation will be disabled', err.message);
+            console.warn('Redis initialization failed, QR validation will be disabled', err.message);
             redis = null;
         }
     }
