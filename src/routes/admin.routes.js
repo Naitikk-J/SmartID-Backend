@@ -174,4 +174,77 @@ router.get('/audit-log', authenticate, requireRole('SUPER_ADMIN'), async (req, r
     }
 });
 
+// ── GET /student-auth-logs ──────────────────────────────────
+router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+    try {
+        const { page = 1, limit = 50, action, status, enrollmentNo, deviceId, search } = req.query;
+        const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+        const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+        const where = {};
+
+        if (action) {
+            where.action = String(action).trim();
+        }
+
+        if (status) {
+            where.status = String(status).trim();
+        }
+
+        if (enrollmentNo) {
+            where.enrollmentNo = { contains: String(enrollmentNo).trim(), mode: 'insensitive' };
+        }
+
+        if (deviceId) {
+            where.deviceId = { contains: String(deviceId).trim(), mode: 'insensitive' };
+        }
+
+        if (search) {
+            const needle = String(search).trim();
+            if (needle) {
+                where.OR = [
+                    { enrollmentNo: { contains: needle, mode: 'insensitive' } },
+                    { studentEmail: { contains: needle, mode: 'insensitive' } },
+                    { deviceId: { contains: needle, mode: 'insensitive' } },
+                    { deviceLabel: { contains: needle, mode: 'insensitive' } },
+                    { reason: { contains: needle, mode: 'insensitive' } },
+                ];
+            }
+        }
+
+        const [logs, total] = await Promise.all([
+            prisma.studentAuthLog.findMany({
+                where,
+                include: {
+                    student: {
+                        select: {
+                            id: true,
+                            fullName: true,
+                            enrollmentNo: true,
+                            email: true,
+                        },
+                    },
+                },
+                orderBy: { createdAt: 'desc' },
+                skip: (parsedPage - 1) * parsedLimit,
+                take: parsedLimit,
+            }),
+            prisma.studentAuthLog.count({ where }),
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                logs,
+                total,
+                page: parsedPage,
+                pages: Math.ceil(total / parsedLimit),
+                limit: parsedLimit,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 module.exports = router;

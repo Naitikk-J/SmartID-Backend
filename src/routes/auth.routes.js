@@ -24,10 +24,20 @@ const HARD_CODED_TEST_STUDENT_PASSWORD = 'Student@123';
 const loginSchema = z.object({
     email: z.string().email('Valid email required'),
     password: z.string().min(1, 'Password required'),
+    deviceId: z.string().trim().min(6).max(128).optional(),
+    deviceLabel: z.string().trim().max(120).optional(),
+    devicePlatform: z.string().trim().max(40).optional(),
 });
 
 const refreshSchema = z.object({
     refreshToken: z.string().min(1, 'Refresh token required'),
+});
+
+const updateStudentDeviceSchema = z.object({
+    deviceId: z.string().trim().min(6).max(128).optional(),
+    deviceLabel: z.string().trim().min(1).max(120).optional(),
+    devicePlatform: z.string().trim().min(1).max(40).optional(),
+    forceRebind: z.boolean().optional(),
 });
 
 function assertAuthRuntimeConfig() {
@@ -52,11 +62,177 @@ function generateTokens(user) {
     return { accessToken, refreshToken };
 }
 
+function cleanString(value, maxLength = 128) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return trimmed.slice(0, maxLength);
+}
+
+function resolveClientIp(req) {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
+        return String(forwardedFor[0]).split(',')[0].trim();
+    }
+    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+        return forwardedFor.split(',')[0].trim();
+    }
+    return req.ip || req.socket?.remoteAddress || null;
+}
+
+function resolveDeviceContext(req) {
+    return {
+        deviceId: cleanString(req.body?.deviceId || req.headers['x-device-id'], 128),
+        deviceLabel: cleanString(req.body?.deviceLabel || req.headers['x-device-label'], 120),
+        devicePlatform: cleanString(req.body?.devicePlatform || req.headers['x-device-platform'], 40),
+        userAgent: cleanString(req.headers['user-agent'], 255),
+    };
+}
+
+async function createStudentAuthLogSafe(payload) {
+    try {
+        await prisma.studentAuthLog.create({ data: payload });
+    } catch (err) {
+        console.warn('⚠️ Failed to write StudentAuthLog:', err.message);
+    }
+}
+
+async function assertStudentDeviceBindingAllowed({ student, email, deviceContext, ipAddress }) {
+    if (!deviceContext.deviceId) {
+        await createStudentAuthLogSafe({
+            studentId: student.id,
+            studentEmail: student.email || email,
+            enrollmentNo: student.enrollmentNo || null,
+            action: 'LOGIN_BLOCKED_MISSING_DEVICE_ID',
+            status: 'BLOCKED',
+            reason: 'DEVICE_ID_REQUIRED',
+            deviceLabel: deviceContext.deviceLabel,
+            devicePlatform: deviceContext.devicePlatform,
+            ipAddress,
+            userAgent: deviceContext.userAgent,
+            metadata: { email },
+        });
+        throw new AppError('Device verification failed. Please login from the official student app.', 400, 'DEVICE_ID_REQUIRED');
+    }
+
+    if (student.linkedDeviceId && student.linkedDeviceId !== deviceContext.deviceId) {
+        await createStudentAuthLogSafe({
+            studentId: student.id,
+            studentEmail: student.email || email,
+            enrollmentNo: student.enrollmentNo || null,
+            action: 'LOGIN_BLOCKED_STUDENT_LINKED_TO_OTHER_DEVICE',
+            status: 'BLOCKED',
+            reason: 'STUDENT_ALREADY_LINKED_TO_OTHER_DEVICE',
+            deviceId: deviceContext.deviceId,
+            deviceLabel: deviceContext.deviceLabel,
+            devicePlatform: deviceContext.devicePlatform,
+            ipAddress,
+            userAgent: deviceContext.userAgent,
+            metadata: {
+                linkedDeviceId: student.linkedDeviceId,
+            },
+        });
+        throw new AppError('This student ID is linked to another device. Contact admin to rebind.', 403, 'STUDENT_DEVICE_MISMATCH');
+    }
+
+    const conflictingStudent = await prisma.student.findFirst({
+        where: {
+            linkedDeviceId: deviceContext.deviceId,
+            NOT: { id: student.id },
+        },
+        select: {
+            id: true,
+            fullName: true,
+            enrollmentNo: true,
+            email: true,
+        },
+    });
+
+    if (conflictingStudent) {
+        await createStudentAuthLogSafe({
+            studentId: student.id,
+            studentEmail: student.email || email,
+            enrollmentNo: student.enrollmentNo || null,
+            action: 'LOGIN_BLOCKED_DEVICE_LINKED_TO_OTHER_STUDENT',
+            status: 'BLOCKED',
+            reason: 'DEVICE_ALREADY_LINKED',
+            deviceId: deviceContext.deviceId,
+            deviceLabel: deviceContext.deviceLabel,
+            devicePlatform: deviceContext.devicePlatform,
+            linkedStudentId: conflictingStudent.id,
+            linkedEnrollmentNo: conflictingStudent.enrollmentNo,
+            ipAddress,
+            userAgent: deviceContext.userAgent,
+            metadata: {
+                linkedStudentName: conflictingStudent.fullName,
+                linkedStudentEmail: conflictingStudent.email,
+            },
+        });
+        throw new AppError('This device is already linked with another student ID.', 403, 'DEVICE_ALREADY_LINKED');
+    }
+}
+
+async function updateStudentDeviceOnLogin(student, deviceContext) {
+    const now = new Date();
+    const updateData = {
+        lastLoginAt: now,
+    };
+
+    if (!student.linkedDeviceId && deviceContext.deviceId) {
+        updateData.linkedDeviceId = deviceContext.deviceId;
+        updateData.deviceLinkedAt = now;
+    }
+    if (deviceContext.deviceLabel) {
+        updateData.linkedDeviceLabel = deviceContext.deviceLabel;
+    }
+    if (deviceContext.devicePlatform) {
+        updateData.linkedDevicePlatform = deviceContext.devicePlatform;
+    }
+
+    return prisma.student.update({
+        where: { id: student.id },
+        data: updateData,
+        select: {
+            id: true,
+            fullName: true,
+            email: true,
+            department: true,
+            studentType: true,
+            enrollmentNo: true,
+            linkedDeviceId: true,
+            linkedDeviceLabel: true,
+            linkedDevicePlatform: true,
+            deviceLinkedAt: true,
+            lastLoginAt: true,
+        },
+    });
+}
+
+function mapStudentUserResponse(student) {
+    return {
+        id: student.id,
+        name: student.fullName,
+        email: student.email,
+        role: 'STUDENT',
+        department: student.department,
+        module: null,
+        studentType: student.studentType,
+        enrollmentNo: student.enrollmentNo,
+        linkedDeviceId: student.linkedDeviceId || null,
+        linkedDeviceLabel: student.linkedDeviceLabel || null,
+        linkedDevicePlatform: student.linkedDevicePlatform || null,
+        deviceLinkedAt: student.deviceLinkedAt || null,
+        lastLoginAt: student.lastLoginAt || null,
+    };
+}
+
 // ── POST /login ─────────────────────────────────────────────
 router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, next) => {
     try {
         assertAuthRuntimeConfig();
         const { email, password } = req.body;
+        const deviceContext = resolveDeviceContext(req);
+        const ipAddress = resolveClientIp(req);
 
         // Testing shortcut: allow a fixed student-style login in non-production.
         // We provision/update a real admin user record so downstream role-protected APIs keep working.
@@ -88,12 +264,33 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
                 },
             });
 
+            await assertStudentDeviceBindingAllowed({
+                student: user,
+                email,
+                deviceContext,
+                ipAddress,
+            });
+            const updatedStudent = await updateStudentDeviceOnLogin(user, deviceContext);
+
             const tokens = generateTokens({
-                id: user.id,
-                email: user.email,
+                id: updatedStudent.id,
+                email: updatedStudent.email,
                 role: 'STUDENT',
-                department: user.department,
+                department: updatedStudent.department,
                 module: null,
+            });
+
+            await createStudentAuthLogSafe({
+                studentId: updatedStudent.id,
+                studentEmail: updatedStudent.email,
+                enrollmentNo: updatedStudent.enrollmentNo,
+                action: 'LOGIN_SUCCESS',
+                status: 'SUCCESS',
+                deviceId: deviceContext.deviceId,
+                deviceLabel: deviceContext.deviceLabel,
+                devicePlatform: deviceContext.devicePlatform,
+                ipAddress,
+                userAgent: deviceContext.userAgent,
             });
 
             return res.json({
@@ -101,14 +298,7 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
                 data: {
                     ...tokens,
                     user: {
-                        id: user.id,
-                        name: user.fullName,
-                        email: user.email,
-                        role: 'STUDENT',
-                        department: user.department,
-                        module: null,
-                        studentType: user.studentType,
-                        enrollmentNo: user.enrollmentNo,
+                        ...mapStudentUserResponse(updatedStudent),
                         testUser: true,
                     },
                 },
@@ -130,59 +320,156 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
         }
 
         if (!user) {
+            await createStudentAuthLogSafe({
+                studentEmail: email,
+                action: 'LOGIN_FAILURE',
+                status: 'FAILED',
+                reason: 'UNKNOWN_EMAIL',
+                deviceId: deviceContext.deviceId,
+                deviceLabel: deviceContext.deviceLabel,
+                devicePlatform: deviceContext.devicePlatform,
+                ipAddress,
+                userAgent: deviceContext.userAgent,
+            });
             throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
         }
 
         if (!user.isActive) {
+            if (isStudent) {
+                await createStudentAuthLogSafe({
+                    studentId: user.id,
+                    studentEmail: user.email,
+                    enrollmentNo: user.enrollmentNo,
+                    action: 'LOGIN_FAILURE',
+                    status: 'FAILED',
+                    reason: 'ACCOUNT_INACTIVE',
+                    deviceId: deviceContext.deviceId,
+                    deviceLabel: deviceContext.deviceLabel,
+                    devicePlatform: deviceContext.devicePlatform,
+                    ipAddress,
+                    userAgent: deviceContext.userAgent,
+                });
+            }
             throw new AppError('Account is deactivated', 401, 'ACCOUNT_INACTIVE');
+        }
+
+        if (isStudent) {
+            await assertStudentDeviceBindingAllowed({
+                student: user,
+                email,
+                deviceContext,
+                ipAddress,
+            });
         }
 
         const passwordMatch = isStudent ? user.passwordHash : user.passwordHash;
         if (!passwordMatch) {
+            if (isStudent) {
+                await createStudentAuthLogSafe({
+                    studentId: user.id,
+                    studentEmail: user.email,
+                    enrollmentNo: user.enrollmentNo,
+                    action: 'LOGIN_FAILURE',
+                    status: 'FAILED',
+                    reason: 'LOGIN_DISABLED',
+                    deviceId: deviceContext.deviceId,
+                    deviceLabel: deviceContext.deviceLabel,
+                    devicePlatform: deviceContext.devicePlatform,
+                    ipAddress,
+                    userAgent: deviceContext.userAgent,
+                });
+            }
             throw new AppError('Login not enabled for this account', 401, 'LOGIN_DISABLED');
         }
 
         const validPassword = await bcrypt.compare(password, passwordMatch);
         if (!validPassword) {
-            await logAction(req, {
-                action: 'LOGIN_FAILURE',
-                entity: isStudent ? 'Student' : 'AdminUser',
-                entityId: user.id,
-                userId: user.id,
-                newValue: { email, reason: 'Invalid password' }
-            }).catch(() => { });
+            if (isStudent) {
+                await createStudentAuthLogSafe({
+                    studentId: user.id,
+                    studentEmail: user.email,
+                    enrollmentNo: user.enrollmentNo,
+                    action: 'LOGIN_FAILURE',
+                    status: 'FAILED',
+                    reason: 'INVALID_PASSWORD',
+                    deviceId: deviceContext.deviceId,
+                    deviceLabel: deviceContext.deviceLabel,
+                    devicePlatform: deviceContext.devicePlatform,
+                    ipAddress,
+                    userAgent: deviceContext.userAgent,
+                });
+            } else {
+                await logAction(req, {
+                    action: 'LOGIN_FAILURE',
+                    entity: 'AdminUser',
+                    entityId: user.id,
+                    userId: user.id,
+                    newValue: { email, reason: 'Invalid password' }
+                }).catch(() => { });
+            }
             throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
         }
 
-        // Update last login (only for AdminUser as Student doesn't have this field yet, but we can add it or skip)
+        let loginStudent = null;
         if (!isStudent) {
             await prisma.adminUser.update({
                 where: { id: user.id },
                 data: { lastLogin: new Date() },
             });
+        } else {
+            loginStudent = await updateStudentDeviceOnLogin(user, deviceContext);
         }
 
-        const tokens = generateTokens(user);
+        const tokenUser = isStudent
+            ? {
+                id: loginStudent.id,
+                email: loginStudent.email,
+                role: 'STUDENT',
+                department: loginStudent.department,
+                module: null,
+            }
+            : user;
 
-        await logAction(req, {
-            action: 'LOGIN_SUCCESS',
-            entity: isStudent ? 'Student' : 'AdminUser',
-            entityId: user.id,
-            userId: user.id
-        }).catch(() => { });
+        const tokens = generateTokens(tokenUser);
+
+        if (isStudent) {
+            await createStudentAuthLogSafe({
+                studentId: loginStudent.id,
+                studentEmail: loginStudent.email,
+                enrollmentNo: loginStudent.enrollmentNo,
+                action: 'LOGIN_SUCCESS',
+                status: 'SUCCESS',
+                deviceId: deviceContext.deviceId,
+                deviceLabel: deviceContext.deviceLabel,
+                devicePlatform: deviceContext.devicePlatform,
+                ipAddress,
+                userAgent: deviceContext.userAgent,
+            });
+        } else {
+            await logAction(req, {
+                action: 'LOGIN_SUCCESS',
+                entity: 'AdminUser',
+                entityId: user.id,
+                userId: user.id
+            }).catch(() => { });
+        }
 
         res.json({
             success: true,
             data: {
                 ...tokens,
                 user: {
-                    id: user.id,
-                    name: user.name || user.fullName,
-                    email: user.email,
-                    role: user.role,
-                    department: user.department,
-                    module: user.module || null,
-                    gateId: user.gateId || null,
+                    ...(isStudent
+                        ? mapStudentUserResponse(loginStudent)
+                        : {
+                            id: user.id,
+                            name: user.name,
+                            email: user.email,
+                            role: user.role,
+                            department: user.department,
+                            module: user.module || null,
+                            gateId: user.gateId || null,
+                        }),
                     isStudent,
                 },
             },
@@ -222,18 +509,44 @@ router.post('/refresh', validate(refreshSchema), async (req, res, next) => {
 // ── POST /logout ────────────────────────────────────────────
 router.post('/logout', authenticate, async (req, res, next) => {
     try {
+        const ipAddress = resolveClientIp(req);
+        const deviceContext = resolveDeviceContext(req);
+
         // Add token to Redis blacklist with 8h TTL
         try {
-            await redis.set(`blacklist:${req.token}`, '1', 'EX', 8 * 60 * 60);
+            if (redis && typeof redis.set === 'function') {
+                await redis.set(`blacklist:${req.token}`, '1', 'EX', 8 * 60 * 60);
+            }
         } catch (redisErr) {
             console.warn('⚠️ Failed to blacklist token in Redis on logout (skipping):', redisErr.message);
         }
 
-        await logAction(req, {
-            action: 'LOGOUT',
-            entity: 'AdminUser',
-            entityId: req.user.id
-        }).catch(() => { });
+        if (req.user.role === 'STUDENT') {
+            const student = await prisma.student.update({
+                where: { id: req.user.id },
+                data: { lastLogoutAt: new Date() },
+                select: { id: true, email: true, enrollmentNo: true },
+            }).catch(() => null);
+
+            await createStudentAuthLogSafe({
+                studentId: student?.id || req.user.id,
+                studentEmail: student?.email || req.user.email,
+                enrollmentNo: student?.enrollmentNo || null,
+                action: 'LOGOUT_SUCCESS',
+                status: 'SUCCESS',
+                deviceId: deviceContext.deviceId,
+                deviceLabel: deviceContext.deviceLabel,
+                devicePlatform: deviceContext.devicePlatform,
+                ipAddress,
+                userAgent: deviceContext.userAgent,
+            });
+        } else {
+            await logAction(req, {
+                action: 'LOGOUT',
+                entity: 'AdminUser',
+                entityId: req.user.id
+            }).catch(() => { });
+        }
 
         res.json({ success: true, data: { message: 'Logged out successfully' } });
     } catch (err) {
@@ -242,8 +555,259 @@ router.post('/logout', authenticate, async (req, res, next) => {
 });
 
 // ── GET /me ─────────────────────────────────────────────────
-router.get('/me', authenticate, (req, res) => {
-    res.json({ success: true, data: { user: req.user } });
+router.get('/me', authenticate, async (req, res, next) => {
+    try {
+        if (req.user.role === 'STUDENT') {
+            const student = await prisma.student.findUnique({
+                where: { id: req.user.id },
+                select: {
+                    id: true,
+                    fullName: true,
+                    email: true,
+                    department: true,
+                    studentType: true,
+                    enrollmentNo: true,
+                    linkedDeviceId: true,
+                    linkedDeviceLabel: true,
+                    linkedDevicePlatform: true,
+                    deviceLinkedAt: true,
+                    lastLoginAt: true,
+                },
+            });
+
+            if (!student) {
+                throw new AppError('Student account not found', 404, 'STUDENT_NOT_FOUND');
+            }
+
+            return res.json({
+                success: true,
+                data: {
+                    user: mapStudentUserResponse(student),
+                },
+            });
+        }
+
+        const admin = await prisma.adminUser.findUnique({
+            where: { id: req.user.id },
+            select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+                department: true,
+                module: true,
+                gateId: true,
+            },
+        });
+
+        return res.json({
+            success: true,
+            data: {
+                user: admin || req.user,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /student/device ─────────────────────────────────────
+router.get('/student/device', authenticate, async (req, res, next) => {
+    try {
+        if (req.user.role !== 'STUDENT') {
+            throw new AppError('Only students can access device info', 403, 'FORBIDDEN');
+        }
+
+        const student = await prisma.student.findUnique({
+            where: { id: req.user.id },
+            select: {
+                id: true,
+                fullName: true,
+                enrollmentNo: true,
+                email: true,
+                linkedDeviceId: true,
+                linkedDeviceLabel: true,
+                linkedDevicePlatform: true,
+                deviceLinkedAt: true,
+                lastLoginAt: true,
+                lastLogoutAt: true,
+            },
+        });
+
+        if (!student) {
+            throw new AppError('Student not found', 404, 'STUDENT_NOT_FOUND');
+        }
+
+        res.json({
+            success: true,
+            data: {
+                student,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /student/device ───────────────────────────────────
+router.patch('/student/device', authenticate, validate(updateStudentDeviceSchema), async (req, res, next) => {
+    try {
+        if (req.user.role !== 'STUDENT') {
+            throw new AppError('Only students can update device info', 403, 'FORBIDDEN');
+        }
+
+        const student = await prisma.student.findUnique({
+            where: { id: req.user.id },
+            select: {
+                id: true,
+                fullName: true,
+                enrollmentNo: true,
+                email: true,
+                linkedDeviceId: true,
+            },
+        });
+
+        if (!student) {
+            throw new AppError('Student not found', 404, 'STUDENT_NOT_FOUND');
+        }
+
+        const ipAddress = resolveClientIp(req);
+        const requestDeviceContext = resolveDeviceContext(req);
+        const requestedDeviceId = cleanString(req.body.deviceId, 128);
+        const requestedDeviceLabel = cleanString(req.body.deviceLabel, 120);
+        const requestedDevicePlatform = cleanString(req.body.devicePlatform, 40);
+        const forceRebind = Boolean(req.body.forceRebind);
+
+        if (!requestedDeviceId && !requestedDeviceLabel && !requestedDevicePlatform) {
+            throw new AppError('At least one device field is required', 400, 'NO_DEVICE_UPDATE_FIELDS');
+        }
+
+        if (
+            requestedDeviceId
+            && student.linkedDeviceId
+            && requestedDeviceId !== student.linkedDeviceId
+            && !forceRebind
+        ) {
+            throw new AppError(
+                'This ID is already linked to another device. Send forceRebind=true to replace it.',
+                409,
+                'DEVICE_REBIND_CONFIRMATION_REQUIRED',
+            );
+        }
+
+        if (requestedDeviceId && requestedDeviceId !== student.linkedDeviceId) {
+            const conflictingStudent = await prisma.student.findFirst({
+                where: {
+                    linkedDeviceId: requestedDeviceId,
+                    NOT: { id: student.id },
+                },
+                select: {
+                    id: true,
+                    enrollmentNo: true,
+                    fullName: true,
+                },
+            });
+
+            if (conflictingStudent) {
+                await createStudentAuthLogSafe({
+                    studentId: student.id,
+                    studentEmail: student.email,
+                    enrollmentNo: student.enrollmentNo,
+                    action: 'DEVICE_REBIND_BLOCKED_DEVICE_LINKED_TO_OTHER_STUDENT',
+                    status: 'BLOCKED',
+                    reason: 'DEVICE_ALREADY_LINKED',
+                    deviceId: requestedDeviceId,
+                    deviceLabel: requestedDeviceLabel,
+                    devicePlatform: requestedDevicePlatform,
+                    linkedStudentId: conflictingStudent.id,
+                    linkedEnrollmentNo: conflictingStudent.enrollmentNo,
+                    ipAddress,
+                    userAgent: requestDeviceContext.userAgent,
+                    metadata: {
+                        linkedStudentName: conflictingStudent.fullName,
+                    },
+                });
+
+                throw new AppError('This device ID is already linked with another student.', 403, 'DEVICE_ALREADY_LINKED');
+            }
+        }
+
+        const updateData = {};
+        if (requestedDeviceId) {
+            updateData.linkedDeviceId = requestedDeviceId;
+            updateData.deviceLinkedAt = new Date();
+        }
+        if (requestedDeviceLabel) {
+            updateData.linkedDeviceLabel = requestedDeviceLabel;
+        }
+        if (requestedDevicePlatform) {
+            updateData.linkedDevicePlatform = requestedDevicePlatform;
+        }
+
+        const updatedStudent = await prisma.student.update({
+            where: { id: req.user.id },
+            data: updateData,
+            select: {
+                id: true,
+                fullName: true,
+                enrollmentNo: true,
+                email: true,
+                linkedDeviceId: true,
+                linkedDeviceLabel: true,
+                linkedDevicePlatform: true,
+                deviceLinkedAt: true,
+            },
+        });
+
+        await createStudentAuthLogSafe({
+            studentId: updatedStudent.id,
+            studentEmail: updatedStudent.email,
+            enrollmentNo: updatedStudent.enrollmentNo,
+            action: requestedDeviceId ? 'DEVICE_REBOUND' : 'DEVICE_METADATA_UPDATED',
+            status: 'SUCCESS',
+            reason: forceRebind ? 'FORCE_REBIND' : null,
+            deviceId: updatedStudent.linkedDeviceId,
+            deviceLabel: updatedStudent.linkedDeviceLabel,
+            devicePlatform: updatedStudent.linkedDevicePlatform,
+            ipAddress,
+            userAgent: requestDeviceContext.userAgent,
+        });
+
+        res.json({
+            success: true,
+            data: {
+                student: updatedStudent,
+                message: 'Device details updated successfully',
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /student/auth-logs ──────────────────────────────────
+router.get('/student/auth-logs', authenticate, async (req, res, next) => {
+    try {
+        if (req.user.role !== 'STUDENT') {
+            throw new AppError('Only students can access their auth logs', 403, 'FORBIDDEN');
+        }
+
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+        const logs = await prisma.studentAuthLog.findMany({
+            where: { studentId: req.user.id },
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+        });
+
+        res.json({
+            success: true,
+            data: {
+                logs,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
 });
 
 module.exports = router;

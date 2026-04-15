@@ -94,6 +94,12 @@ model Student {
   emergencyName   String?
   emergencyPhone  String?
   fcmToken        String?
+  linkedDeviceId  String?      @unique
+  linkedDeviceLabel String?
+  linkedDevicePlatform String?
+  deviceLinkedAt  DateTime?
+  lastLoginAt     DateTime?
+  lastLogoutAt    DateTime?
   isActive        Boolean      @default(true)
   passwordHash    String?
   createdAt       DateTime     @default(now())
@@ -108,6 +114,7 @@ model Student {
   faceData             FaceData?
   faceDetectionLogs    FaceDetectionLog[]
   pinkSlips            PinkSlip[]
+  authLogs             StudentAuthLog[]
 
   @@index([studentType])
   @@map("students")
@@ -409,6 +416,34 @@ model AuditLog {
   actor       AdminUser @relation(fields: [actorId], references: [id])
 
   @@map("audit_logs")
+}
+
+model StudentAuthLog {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  studentId        String?   @db.ObjectId
+  studentEmail     String?
+  enrollmentNo     String?
+  action           String
+  status           String    @default("SUCCESS")
+  reason           String?
+  deviceId         String?
+  deviceLabel      String?
+  devicePlatform   String?
+  linkedStudentId  String?   @db.ObjectId
+  linkedEnrollmentNo String?
+  ipAddress        String?
+  userAgent        String?
+  metadata         Json?
+  createdAt        DateTime  @default(now())
+
+  student          Student?  @relation(fields: [studentId], references: [id])
+
+  @@index([studentId, createdAt])
+  @@index([deviceId, createdAt])
+  @@index([action, createdAt])
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@map("student_auth_logs")
 }
 
 model FaceData {
