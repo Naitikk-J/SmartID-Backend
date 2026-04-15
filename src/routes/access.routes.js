@@ -165,6 +165,22 @@ function parseGeofence(locationValue) {
     return null;
 }
 
+function normalizeDirection(value) {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (normalized === 'ENTRY' || normalized === 'EXIT') return normalized;
+    return null;
+}
+
+function deriveNextDirectionFromPrevious(previousScan) {
+    const previousDirection = normalizeDirection(
+        previousScan?.metadata?.event_type || previousScan?.metadata?.direction,
+    );
+
+    if (previousDirection === 'ENTRY') return 'EXIT';
+    if (previousDirection === 'EXIT') return 'ENTRY';
+    return 'ENTRY';
+}
+
 function withTimeout(promise, timeoutMs, label) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -482,7 +498,7 @@ router.post(
             const longitude = Number(req.body.longitude);
             const accuracy = Number(req.body.accuracy);
             const timestamp = req.body.timestamp ? new Date(req.body.timestamp) : new Date();
-            const eventType = String(req.body.event_type || 'ENTRY').toUpperCase();
+            const requestedEventType = normalizeDirection(req.body.event_type) || 'ENTRY';
             const mockLocation = Boolean(req.body.mock_location || req.body.mockLocation);
             const faceImage = req.body.faceImage;
 
@@ -639,6 +655,9 @@ router.post(
                 console.warn('Previous scan lookup skipped:', err.message);
             }
 
+            // Direction is always server-derived so students cannot manually flip ENTRY/EXIT.
+            const eventType = deriveNextDirectionFromPrevious(previous);
+
             let suspicious = false;
             let locationTrustScore = 100;
             if (previous?.metadata?.latitude && previous?.metadata?.longitude && previous?.scannedAt) {
@@ -725,6 +744,7 @@ router.post(
                                 accuracy,
                                 direction: eventType,
                                 event_type: eventType,
+                                requested_event_type: requestedEventType,
                                 student_name: req.user.email,
                                 qr_source: qrSource,
                                 geofence_required: ACCESS_REQUIRE_GEOFENCE,
@@ -775,6 +795,7 @@ router.post(
                     geofence_gps_margin_m: geofenceGpsMarginMeters,
                     geofence_outside_by_m: geofenceOutsideByMeters,
                     suspicious,
+                    event_type: eventType,
                     scanEventId: scanEvent?.id || null,
                 },
             });
