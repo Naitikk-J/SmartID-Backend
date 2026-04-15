@@ -100,7 +100,7 @@ model Student {
   emergencyName   String?
   emergencyPhone  String?
   fcmToken        String?
-  linkedDeviceId  String?      @unique
+  linkedDeviceId  String?
   linkedDeviceLabel String?
   linkedDevicePlatform String?
   deviceLinkedAt  DateTime?
