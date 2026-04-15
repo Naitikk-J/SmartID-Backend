@@ -47,6 +47,14 @@ const requestStudentDeviceRebindSchema = z.object({
     reason: z.string().trim().max(240).optional(),
 });
 
+const loginRebindRequestSchema = z.object({
+    email: z.string().email('Valid email required'),
+    reason: z.string().trim().min(3, 'Reason is required').max(240),
+    deviceId: z.string().trim().min(6).max(128).optional(),
+    deviceLabel: z.string().trim().max(120).optional(),
+    devicePlatform: z.string().trim().max(40).optional(),
+});
+
 function assertAuthRuntimeConfig() {
     if (!config.DATABASE_URL) {
         throw new AppError('Authentication service is temporarily unavailable', 503, 'AUTH_CONFIG_MISSING');
@@ -171,6 +179,131 @@ async function createStudentAlertSafe({
         console.warn('⚠️ Failed to create student alert:', err.message);
         return null;
     }
+}
+
+async function createOrUpdateRebindRequestForStudent({
+    student,
+    requestedDeviceId,
+    requestedDeviceLabel,
+    requestedDevicePlatform,
+    reason,
+    ipAddress,
+    userAgent,
+    source,
+}) {
+    if (!student.linkedDeviceId) {
+        throw new AppError('No linked device found for this ID. Please login normally.', 400, 'DEVICE_NOT_LINKED');
+    }
+
+    if (requestedDeviceId === student.linkedDeviceId) {
+        throw new AppError('Requested device is already linked to this account.', 400, 'SAME_DEVICE');
+    }
+
+    const conflictingStudent = await prisma.student.findFirst({
+        where: {
+            linkedDeviceId: requestedDeviceId,
+            NOT: { id: student.id },
+        },
+        select: {
+            id: true,
+            enrollmentNo: true,
+            fullName: true,
+        },
+    });
+
+    if (conflictingStudent) {
+        await createStudentAuthLogSafe({
+            studentId: student.id,
+            studentEmail: student.email,
+            enrollmentNo: student.enrollmentNo,
+            action: 'DEVICE_REBIND_REQUEST_BLOCKED_DEVICE_LINKED_TO_OTHER_STUDENT',
+            status: 'BLOCKED',
+            reason: 'DEVICE_ALREADY_LINKED',
+            deviceId: requestedDeviceId,
+            deviceLabel: requestedDeviceLabel,
+            devicePlatform: requestedDevicePlatform,
+            linkedStudentId: conflictingStudent.id,
+            linkedEnrollmentNo: conflictingStudent.enrollmentNo,
+            ipAddress,
+            userAgent,
+            metadata: {
+                linkedStudentName: conflictingStudent.fullName,
+                source,
+            },
+        });
+
+        await createStudentAlertSafe({
+            studentId: student.id,
+            title: 'Rebind request blocked',
+            body: `Requested device is already linked to enrollment ${conflictingStudent.enrollmentNo}.`,
+            ipAddress,
+        });
+
+        throw new AppError('Requested device is already linked with another student.', 403, 'DEVICE_ALREADY_LINKED');
+    }
+
+    const existingPending = await prisma.deviceRebindRequest.findFirst({
+        where: {
+            studentId: student.id,
+            status: 'PENDING',
+        },
+        orderBy: { requestedAt: 'desc' },
+    });
+
+    const requestRecord = existingPending
+        ? await prisma.deviceRebindRequest.update({
+            where: { id: existingPending.id },
+            data: {
+                currentDeviceId: student.linkedDeviceId,
+                requestedDeviceId,
+                requestedLabel: requestedDeviceLabel,
+                requestedPlatform: requestedDevicePlatform,
+                reason,
+                requestedAt: new Date(),
+                adminNote: null,
+                processedAt: null,
+                processedById: null,
+            },
+        })
+        : await prisma.deviceRebindRequest.create({
+            data: {
+                studentId: student.id,
+                currentDeviceId: student.linkedDeviceId,
+                requestedDeviceId,
+                requestedLabel: requestedDeviceLabel,
+                requestedPlatform: requestedDevicePlatform,
+                reason,
+            },
+        });
+
+    await createStudentAuthLogSafe({
+        studentId: student.id,
+        studentEmail: student.email,
+        enrollmentNo: student.enrollmentNo,
+        action: 'DEVICE_REBIND_REQUESTED',
+        status: 'PENDING',
+        reason: reason || null,
+        deviceId: requestedDeviceId,
+        deviceLabel: requestedDeviceLabel,
+        devicePlatform: requestedDevicePlatform,
+        ipAddress,
+        userAgent,
+        metadata: {
+            requestId: requestRecord.id,
+            currentDeviceId: student.linkedDeviceId,
+            source,
+        },
+    });
+
+    await createStudentAlertSafe({
+        studentId: student.id,
+        title: 'Device rebind request submitted',
+        body: 'Your request has been sent to admin for approval.',
+        targetId: requestRecord.id,
+        ipAddress,
+    });
+
+    return requestRecord;
 }
 
 async function assertStudentDeviceBindingAllowed({ student, email, deviceContext, ipAddress }) {
@@ -711,6 +844,63 @@ router.get('/me', authenticate, async (req, res, next) => {
     }
 });
 
+// ── POST /rebind-request — Login page request (email + reason) ──
+router.post('/rebind-request', loginRateLimit, validate(loginRebindRequestSchema), async (req, res, next) => {
+    try {
+        assertAuthRuntimeConfig();
+
+        const email = String(req.body.email || '').trim().toLowerCase();
+        const reason = cleanString(req.body.reason, 240);
+        const deviceContext = resolveDeviceContext(req);
+        const ipAddress = resolveClientIp(req);
+
+        if (!deviceContext.deviceId) {
+            throw new AppError('Device identity missing. Please request from mobile app.', 400, 'DEVICE_ID_REQUIRED');
+        }
+
+        const student = await prisma.student.findUnique({
+            where: { email },
+            select: {
+                id: true,
+                email: true,
+                enrollmentNo: true,
+                fullName: true,
+                linkedDeviceId: true,
+                isActive: true,
+            },
+        });
+
+        if (!student) {
+            throw new AppError('Student with this email not found.', 404, 'STUDENT_NOT_FOUND');
+        }
+
+        if (!student.isActive) {
+            throw new AppError('Student account is inactive.', 403, 'ACCOUNT_INACTIVE');
+        }
+
+        const requestRecord = await createOrUpdateRebindRequestForStudent({
+            student,
+            requestedDeviceId: deviceContext.deviceId,
+            requestedDeviceLabel: deviceContext.deviceLabel,
+            requestedDevicePlatform: deviceContext.devicePlatform,
+            reason,
+            ipAddress,
+            userAgent: deviceContext.userAgent,
+            source: 'LOGIN_PAGE',
+        });
+
+        return res.status(201).json({
+            success: true,
+            data: {
+                request: requestRecord,
+                message: 'Rebind request submitted successfully',
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── GET /student/device ─────────────────────────────────────
 router.get('/student/device', authenticate, async (req, res, next) => {
     try {
@@ -928,107 +1118,15 @@ router.post('/student/device/rebind-request', authenticate, validate(requestStud
         const ipAddress = resolveClientIp(req);
         const requestDeviceContext = resolveDeviceContext(req);
 
-        if (requestedDeviceId === student.linkedDeviceId) {
-            throw new AppError('Requested device is already linked to your account.', 400, 'SAME_DEVICE');
-        }
-
-        const conflictingStudent = await prisma.student.findFirst({
-            where: {
-                linkedDeviceId: requestedDeviceId,
-                NOT: { id: student.id },
-            },
-            select: {
-                id: true,
-                enrollmentNo: true,
-                fullName: true,
-            },
-        });
-
-        if (conflictingStudent) {
-            await createStudentAuthLogSafe({
-                studentId: student.id,
-                studentEmail: student.email,
-                enrollmentNo: student.enrollmentNo,
-                action: 'DEVICE_REBIND_REQUEST_BLOCKED_DEVICE_LINKED_TO_OTHER_STUDENT',
-                status: 'BLOCKED',
-                reason: 'DEVICE_ALREADY_LINKED',
-                deviceId: requestedDeviceId,
-                deviceLabel: requestedDeviceLabel,
-                devicePlatform: requestedDevicePlatform,
-                linkedStudentId: conflictingStudent.id,
-                linkedEnrollmentNo: conflictingStudent.enrollmentNo,
-                ipAddress,
-                userAgent: requestDeviceContext.userAgent,
-            });
-
-            await createStudentAlertSafe({
-                studentId: student.id,
-                title: 'Rebind request blocked',
-                body: `Requested device is already linked to enrollment ${conflictingStudent.enrollmentNo}.`,
-                ipAddress,
-            });
-
-            throw new AppError('Requested device is already linked with another student.', 403, 'DEVICE_ALREADY_LINKED');
-        }
-
-        const existingPending = await prisma.deviceRebindRequest.findFirst({
-            where: {
-                studentId: student.id,
-                status: 'PENDING',
-            },
-            orderBy: { requestedAt: 'desc' },
-        });
-
-        const requestRecord = existingPending
-            ? await prisma.deviceRebindRequest.update({
-                where: { id: existingPending.id },
-                data: {
-                    currentDeviceId: student.linkedDeviceId,
-                    requestedDeviceId,
-                    requestedLabel: requestedDeviceLabel,
-                    requestedPlatform: requestedDevicePlatform,
-                    reason,
-                    requestedAt: new Date(),
-                    adminNote: null,
-                    processedAt: null,
-                    processedById: null,
-                },
-            })
-            : await prisma.deviceRebindRequest.create({
-                data: {
-                    studentId: student.id,
-                    currentDeviceId: student.linkedDeviceId,
-                    requestedDeviceId,
-                    requestedLabel: requestedDeviceLabel,
-                    requestedPlatform: requestedDevicePlatform,
-                    reason,
-                },
-            });
-
-        await createStudentAuthLogSafe({
-            studentId: student.id,
-            studentEmail: student.email,
-            enrollmentNo: student.enrollmentNo,
-            action: 'DEVICE_REBIND_REQUESTED',
-            status: 'PENDING',
-            reason: reason || null,
-            deviceId: requestedDeviceId,
-            deviceLabel: requestedDeviceLabel,
-            devicePlatform: requestedDevicePlatform,
+        const requestRecord = await createOrUpdateRebindRequestForStudent({
+            student,
+            requestedDeviceId,
+            requestedDeviceLabel,
+            requestedDevicePlatform,
+            reason,
             ipAddress,
             userAgent: requestDeviceContext.userAgent,
-            metadata: {
-                requestId: requestRecord.id,
-                currentDeviceId: student.linkedDeviceId,
-            },
-        });
-
-        await createStudentAlertSafe({
-            studentId: student.id,
-            title: 'Device rebind request submitted',
-            body: 'Your request has been sent to admin for approval.',
-            targetId: requestRecord.id,
-            ipAddress,
+            source: 'STUDENT_DASHBOARD',
         });
 
         res.status(201).json({
