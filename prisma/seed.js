@@ -11,6 +11,8 @@ async function main() {
     console.log('🌱 Starting database seed for MongoDB...');
 
     // 1. Clean existing data
+    await prisma.deviceRebindRequest.deleteMany({});
+    await prisma.studentAuthLog.deleteMany({});
     await prisma.auditLog.deleteMany({});
     await prisma.vote.deleteMany({});
     await prisma.libraryTransaction.deleteMany({});

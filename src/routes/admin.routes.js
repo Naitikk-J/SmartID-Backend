@@ -11,6 +11,7 @@ const { validate } = require('../middleware/validate');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
 const { logAction } = require('../services/audit.service');
+const { sendPush } = require('../services/notification.service');
 
 const router = express.Router();
 
@@ -28,6 +29,56 @@ const updateAdminSchema = z.object({
     department: z.preprocess((val) => (val === '' ? null : val), z.string().optional().nullable()),
     module: z.preprocess((val) => (val === '' ? null : val), z.enum(['LIBRARY', 'MESS', 'CANTEEN', 'HEALTH', 'FINANCE', 'EVENTS']).optional().nullable()),
 });
+
+const resolveRebindDecisionSchema = z.object({
+    decision: z.enum(['APPROVE', 'REJECT']),
+    adminNote: z.string().trim().max(240).optional(),
+});
+
+function normalizeBoolean(value) {
+    return String(value || '').trim().toLowerCase() === 'true' || String(value || '').trim() === '1';
+}
+
+async function createStudentAlertFromAdmin({ actorId, studentId, title, body, targetId = null, targetType = 'GENERIC', screen = 'dashboard' }) {
+    try {
+        const payload = {
+            title,
+            body,
+            targetId,
+            targetType,
+            screen,
+            type: 'STUDENT_ALERT',
+        };
+
+        const alert = await prisma.auditLog.create({
+            data: {
+                actorId,
+                action: 'STUDENT_ALERT',
+                entity: 'Student',
+                entityId: studentId,
+                newValue: payload,
+            },
+        });
+
+        await sendPush({
+            studentId,
+            title,
+            body,
+            data: {
+                type: 'STUDENT_ALERT',
+                alertId: String(alert.id),
+                targetId: targetId ? String(targetId) : '',
+                targetType,
+                screen,
+            },
+        });
+
+        return alert;
+    } catch (err) {
+        console.warn('⚠️ Failed to send student alert from admin route:', err.message);
+        return null;
+    }
+}
 
 // ── GET /users — List all admin users ───────────────────────
 router.get('/users', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
@@ -177,7 +228,7 @@ router.get('/audit-log', authenticate, requireRole('SUPER_ADMIN'), async (req, r
 // ── GET /student-auth-logs ──────────────────────────────────
 router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
     try {
-        const { page = 1, limit = 50, action, status, enrollmentNo, deviceId, search } = req.query;
+        const { page = 1, limit = 50, action, status, enrollmentNo, deviceId, search, fromDate, toDate, blockedOnly } = req.query;
         const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
         const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
@@ -189,6 +240,10 @@ router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async
 
         if (status) {
             where.status = String(status).trim();
+        }
+
+        if (normalizeBoolean(blockedOnly)) {
+            where.status = 'BLOCKED';
         }
 
         if (enrollmentNo) {
@@ -209,6 +264,26 @@ router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async
                     { deviceLabel: { contains: needle, mode: 'insensitive' } },
                     { reason: { contains: needle, mode: 'insensitive' } },
                 ];
+            }
+        }
+
+        if (fromDate || toDate) {
+            const createdAt = {};
+            if (fromDate) {
+                const from = new Date(String(fromDate));
+                if (!Number.isNaN(from.getTime())) {
+                    createdAt.gte = from;
+                }
+            }
+            if (toDate) {
+                const to = new Date(String(toDate));
+                if (!Number.isNaN(to.getTime())) {
+                    to.setHours(23, 59, 59, 999);
+                    createdAt.lte = to;
+                }
+            }
+            if (Object.keys(createdAt).length > 0) {
+                where.createdAt = createdAt;
             }
         }
 
@@ -240,6 +315,262 @@ router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async
                 page: parsedPage,
                 pages: Math.ceil(total / parsedLimit),
                 limit: parsedLimit,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /device-rebind-requests ─────────────────────────────
+router.get('/device-rebind-requests', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+    try {
+        const { page = 1, limit = 50, status = 'PENDING', search } = req.query;
+        const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+        const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+        const where = {};
+        if (status) {
+            where.status = String(status).trim().toUpperCase();
+        }
+
+        if (search) {
+            const needle = String(search).trim();
+            if (needle) {
+                const matchingStudents = await prisma.student.findMany({
+                    where: {
+                        OR: [
+                            { enrollmentNo: { contains: needle, mode: 'insensitive' } },
+                            { fullName: { contains: needle, mode: 'insensitive' } },
+                            { email: { contains: needle, mode: 'insensitive' } },
+                        ],
+                    },
+                    select: { id: true },
+                    take: 200,
+                });
+                const studentIds = matchingStudents.map((item) => item.id);
+
+                where.OR = [
+                    { requestedDeviceId: { contains: needle, mode: 'insensitive' } },
+                    { requestedLabel: { contains: needle, mode: 'insensitive' } },
+                    ...(studentIds.length > 0 ? [{ studentId: { in: studentIds } }] : []),
+                ];
+            }
+        }
+
+        const [requests, total] = await Promise.all([
+            prisma.deviceRebindRequest.findMany({
+                where,
+                include: {
+                    student: {
+                        select: {
+                            id: true,
+                            fullName: true,
+                            enrollmentNo: true,
+                            email: true,
+                            linkedDeviceId: true,
+                            linkedDeviceLabel: true,
+                            linkedDevicePlatform: true,
+                        },
+                    },
+                    processedBy: {
+                        select: {
+                            id: true,
+                            name: true,
+                            email: true,
+                        },
+                    },
+                },
+                orderBy: { requestedAt: 'desc' },
+                skip: (parsedPage - 1) * parsedLimit,
+                take: parsedLimit,
+            }),
+            prisma.deviceRebindRequest.count({ where }),
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                requests,
+                total,
+                page: parsedPage,
+                pages: Math.ceil(total / parsedLimit),
+                limit: parsedLimit,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /device-rebind-requests/:id/decision ─────────────
+router.patch('/device-rebind-requests/:id/decision', authenticate, requireRole('SUPER_ADMIN'), validate(resolveRebindDecisionSchema), async (req, res, next) => {
+    try {
+        const requestRecord = await prisma.deviceRebindRequest.findUnique({
+            where: { id: req.params.id },
+            include: {
+                student: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        enrollmentNo: true,
+                        email: true,
+                        linkedDeviceId: true,
+                    },
+                },
+            },
+        });
+
+        if (!requestRecord) {
+            throw new AppError('Rebind request not found', 404, 'DEVICE_REBIND_REQUEST_NOT_FOUND');
+        }
+
+        if (requestRecord.status !== 'PENDING') {
+            throw new AppError('Rebind request already processed', 409, 'DEVICE_REBIND_REQUEST_ALREADY_PROCESSED');
+        }
+
+        const decision = req.body.decision;
+        const adminNote = (req.body.adminNote || '').trim() || null;
+
+        if (decision === 'REJECT') {
+            const rejected = await prisma.deviceRebindRequest.update({
+                where: { id: requestRecord.id },
+                data: {
+                    status: 'REJECTED',
+                    adminNote,
+                    processedById: req.user.id,
+                    processedAt: new Date(),
+                },
+            });
+
+            await prisma.studentAuthLog.create({
+                data: {
+                    studentId: requestRecord.studentId,
+                    studentEmail: requestRecord.student?.email || null,
+                    enrollmentNo: requestRecord.student?.enrollmentNo || null,
+                    action: 'DEVICE_REBIND_REJECTED',
+                    status: 'REJECTED',
+                    reason: adminNote || 'REJECTED_BY_ADMIN',
+                    deviceId: requestRecord.requestedDeviceId,
+                    deviceLabel: requestRecord.requestedLabel,
+                    devicePlatform: requestRecord.requestedPlatform,
+                    metadata: {
+                        requestId: requestRecord.id,
+                        processedBy: req.user.id,
+                    },
+                },
+            }).catch(() => { });
+
+            await createStudentAlertFromAdmin({
+                actorId: req.user.id,
+                studentId: requestRecord.studentId,
+                title: 'Device rebind request rejected',
+                body: adminNote || 'Admin rejected your device rebind request.',
+                targetId: requestRecord.id,
+            });
+
+            await logAction(req, {
+                action: 'DEVICE_REBIND_REQUEST_REJECTED',
+                entity: 'DeviceRebindRequest',
+                entityId: requestRecord.id,
+                newValue: { studentId: requestRecord.studentId, requestedDeviceId: requestRecord.requestedDeviceId, adminNote },
+            }).catch(() => { });
+
+            return res.json({ success: true, data: { request: rejected } });
+        }
+
+        const conflictingStudent = await prisma.student.findFirst({
+            where: {
+                linkedDeviceId: requestRecord.requestedDeviceId,
+                NOT: { id: requestRecord.studentId },
+            },
+            select: {
+                id: true,
+                enrollmentNo: true,
+                fullName: true,
+            },
+        });
+
+        if (conflictingStudent) {
+            throw new AppError(
+                `Cannot approve: device already linked to ${conflictingStudent.enrollmentNo}.`,
+                409,
+                'DEVICE_ALREADY_LINKED',
+            );
+        }
+
+        const now = new Date();
+        const [approvedRequest, updatedStudent] = await prisma.$transaction([
+            prisma.deviceRebindRequest.update({
+                where: { id: requestRecord.id },
+                data: {
+                    status: 'APPROVED',
+                    adminNote,
+                    processedById: req.user.id,
+                    processedAt: now,
+                },
+            }),
+            prisma.student.update({
+                where: { id: requestRecord.studentId },
+                data: {
+                    linkedDeviceId: requestRecord.requestedDeviceId,
+                    linkedDeviceLabel: requestRecord.requestedLabel || requestRecord.student?.linkedDeviceLabel || null,
+                    linkedDevicePlatform: requestRecord.requestedPlatform || requestRecord.student?.linkedDevicePlatform || null,
+                    deviceLinkedAt: now,
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    enrollmentNo: true,
+                    linkedDeviceId: true,
+                    linkedDeviceLabel: true,
+                    linkedDevicePlatform: true,
+                },
+            }),
+        ]);
+
+        await prisma.studentAuthLog.create({
+            data: {
+                studentId: updatedStudent.id,
+                studentEmail: updatedStudent.email,
+                enrollmentNo: updatedStudent.enrollmentNo,
+                action: 'DEVICE_REBIND_APPROVED',
+                status: 'SUCCESS',
+                reason: adminNote || null,
+                deviceId: updatedStudent.linkedDeviceId,
+                deviceLabel: updatedStudent.linkedDeviceLabel,
+                devicePlatform: updatedStudent.linkedDevicePlatform,
+                metadata: {
+                    requestId: requestRecord.id,
+                    processedBy: req.user.id,
+                },
+            },
+        }).catch(() => { });
+
+        await createStudentAlertFromAdmin({
+            actorId: req.user.id,
+            studentId: updatedStudent.id,
+            title: 'Device rebind approved',
+            body: 'Admin approved your device rebind request. You can now login from the new device.',
+            targetId: requestRecord.id,
+        });
+
+        await logAction(req, {
+            action: 'DEVICE_REBIND_REQUEST_APPROVED',
+            entity: 'DeviceRebindRequest',
+            entityId: requestRecord.id,
+            newValue: {
+                studentId: updatedStudent.id,
+                requestedDeviceId: updatedStudent.linkedDeviceId,
+                adminNote,
+            },
+        }).catch(() => { });
+
+        res.json({
+            success: true,
+            data: {
+                request: approvedRequest,
+                student: updatedStudent,
             },
         });
     } catch (err) {

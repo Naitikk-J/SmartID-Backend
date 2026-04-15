@@ -69,6 +69,12 @@ enum ExitMode {
   CUSTOM
 }
 
+enum RebindRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 // ─── Models ──────────────────────────────────────────────────
 
 model Student {
@@ -115,6 +121,7 @@ model Student {
   faceDetectionLogs    FaceDetectionLog[]
   pinkSlips            PinkSlip[]
   authLogs             StudentAuthLog[]
+  deviceRebindRequests DeviceRebindRequest[]
 
   @@index([studentType])
   @@map("students")
@@ -162,6 +169,7 @@ model AdminUser {
   campusEvents        CampusEvent[]
   auditLogs           AuditLog[]
   approvedPinkSlips   PinkSlip[]       @relation("ApprovedPinkSlips")
+  processedRebindRequests DeviceRebindRequest[] @relation("ProcessedRebindRequests")
   gateId              String?      @db.ObjectId
   gate                Gate?        @relation(fields: [gateId], references: [id])
 
@@ -444,6 +452,29 @@ model StudentAuthLog {
   @@index([status, createdAt])
   @@index([createdAt])
   @@map("student_auth_logs")
+}
+
+model DeviceRebindRequest {
+  id               String               @id @default(auto()) @map("_id") @db.ObjectId
+  studentId        String               @db.ObjectId
+  currentDeviceId  String?
+  requestedDeviceId String
+  requestedLabel   String?
+  requestedPlatform String?
+  reason           String?
+  status           RebindRequestStatus  @default(PENDING)
+  requestedAt      DateTime             @default(now())
+  processedAt      DateTime?
+  processedById    String?              @db.ObjectId
+  adminNote        String?
+
+  student          Student              @relation(fields: [studentId], references: [id])
+  processedBy      AdminUser?           @relation("ProcessedRebindRequests", fields: [processedById], references: [id])
+
+  @@index([studentId, status, requestedAt])
+  @@index([requestedDeviceId, status, requestedAt])
+  @@index([status, requestedAt])
+  @@map("device_rebind_requests")
 }
 
 model FaceData {
