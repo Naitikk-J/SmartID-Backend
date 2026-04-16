@@ -290,6 +290,7 @@ model CampusEvent {
   reportRecipients String[] @default([])
   timezone    String     @default("Asia/Kolkata")
   importedCount Int      @default(0)
+  maxMealsPerParticipant Int?
   eventDate   DateTime
   startTime   DateTime
   endTime     DateTime
@@ -320,6 +321,8 @@ model EventParticipant {
   phone              String
   loginId            String
   passwordHint       String?
+  maxMealsAllowed    Int?
+  mealsConsumed      Int?
   isActive           Boolean     @default(true)
   credentialsIssuedAt DateTime?
   createdAt          DateTime    @default(now())

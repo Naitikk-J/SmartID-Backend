@@ -27,6 +27,15 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 
 const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']);
 
+const nullableIntField = (min, max) => z.preprocess((value) => {
+    if (value === null || value === undefined || value === '') return value;
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? value : numeric;
+}, z.union([
+    z.number().int().min(min).max(max),
+    z.null(),
+]));
+
 const participantSchema = z.object({
     fullName: z.string().min(1),
     email: z.string().email(),
@@ -59,6 +68,7 @@ const createEventSchema = z.object({
     customMax: z.number().int().positive().optional().nullable(),
     appliesTo: z.array(z.string()).default(['ALL']),
     gateIds: z.array(z.string()).default([]),
+    maxMealsPerParticipant: nullableIntField(1, 100).optional(),
     participants: z.array(participantSchema).optional().default([]),
     messRules: z.array(messRuleSchema).optional().default([]),
 });
@@ -77,6 +87,7 @@ const updateEventSchema = z.object({
     customMax: z.number().int().positive().optional().nullable(),
     appliesTo: z.array(z.string()).optional(),
     gateIds: z.array(z.string()).optional(),
+    maxMealsPerParticipant: nullableIntField(1, 100).optional(),
     messRules: z.array(messRuleSchema).optional(),
 });
 
@@ -90,6 +101,17 @@ const updateRecipientsSchema = z.object({
 
 const upsertMessRulesSchema = z.object({
     rules: z.array(messRuleSchema),
+});
+
+const updateEventMealSettingsSchema = z.object({
+    maxMealsPerParticipant: nullableIntField(1, 100),
+});
+
+const updateParticipantMealsSchema = z.object({
+    maxMealsAllowed: nullableIntField(1, 100).optional(),
+    mealsConsumed: nullableIntField(0, 200).optional(),
+}).refine((payload) => payload.maxMealsAllowed !== undefined || payload.mealsConsumed !== undefined, {
+    message: 'At least one meal field is required',
 });
 
 const eventScanSchema = z.object({
@@ -248,6 +270,7 @@ async function importParticipantsForEvent(event, participants) {
                         phone: p.phone,
                         loginId: p.loginId,
                         passwordHint: p.phone,
+                        mealsConsumed: 0,
                         isActive: true,
                         credentialsIssuedAt: new Date(),
                     },
@@ -312,24 +335,33 @@ function nextDirectionalState(lastDirection) {
     return 'ENTRY';
 }
 
-function resolveNextMealFromHistory(todayMealScans) {
-    if (!Array.isArray(todayMealScans) || todayMealScans.length === 0) {
-        return {
-            mealNumber: 1,
-            mealLabel: 'Meal 1',
-        };
+function resolveParticipantConsumedMeals(participant) {
+    const explicitCount = Number(participant?.mealsConsumed);
+    if (Number.isInteger(explicitCount) && explicitCount >= 0) {
+        return explicitCount;
     }
 
-    const maxMeal = todayMealScans.reduce((acc, row) => {
-        const current = Number(row?.mealNumber || 0);
-        if (!Number.isInteger(current) || current < 1) return acc;
-        return Math.max(acc, current);
-    }, 0);
+    const countedScans = Number(participant?._count?.mealScans || 0);
+    if (Number.isInteger(countedScans) && countedScans >= 0) {
+        return countedScans;
+    }
 
-    const nextMealNumber = Math.max(1, maxMeal + 1);
+    return 0;
+}
+
+function buildParticipantMealStats(participant, eventMaxMeals) {
+    const consumed = resolveParticipantConsumedMeals(participant);
+    const overrideMaxRaw = Number(participant?.maxMealsAllowed);
+    const overrideMax = Number.isInteger(overrideMaxRaw) && overrideMaxRaw > 0 ? overrideMaxRaw : null;
+    const globalMax = Number.isInteger(eventMaxMeals) && eventMaxMeals > 0 ? eventMaxMeals : null;
+    const effectiveMaxMeals = overrideMax ?? globalMax;
+    const remaining = effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumed, 0);
+
     return {
-        mealNumber: nextMealNumber,
-        mealLabel: `Meal ${nextMealNumber}`,
+        consumed,
+        remaining,
+        effectiveMaxMeals,
+        canAvailMore: effectiveMaxMeals == null ? true : remaining > 0,
     };
 }
 
@@ -574,6 +606,7 @@ router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(creat
                 customMax: payload.customMax ?? null,
                 appliesTo: payload.appliesTo || ['ALL'],
                 gateIds: payload.gateIds || [],
+                maxMealsPerParticipant: payload.maxMealsPerParticipant ?? null,
                 createdById: req.user.id,
             },
         });
@@ -629,6 +662,12 @@ router.post('/:id/participants/import', authenticate, requireRole('HOD', 'SUPER_
 // ── GET /:id/participants — Event participants + credentials table ─────────
 router.get('/:id/participants', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
+        const event = await prisma.campusEvent.findUnique({
+            where: { id: req.params.id },
+            select: { id: true, maxMealsPerParticipant: true },
+        });
+        if (!event) throw new AppError('Event not found', 404);
+
         const page = Math.max(1, Number(req.query.page || 1));
         const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
         const search = String(req.query.search || '').trim();
@@ -662,19 +701,123 @@ router.get('/:id/participants', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
                             studentType: true,
                         },
                     },
+                    _count: {
+                        select: {
+                            mealScans: true,
+                        },
+                    },
                 },
             }),
             prisma.eventParticipant.count({ where }),
         ]);
 
+        const withMealStats = participants.map((participant) => ({
+            ...participant,
+            mealStats: buildParticipantMealStats(participant, event.maxMealsPerParticipant),
+        }));
+
         res.json({
             success: true,
             data: {
-                participants,
+                participants: withMealStats,
                 total,
                 page,
                 limit,
                 pages: Math.ceil(total / limit),
+                eventMealSettings: {
+                    maxMealsPerParticipant: event.maxMealsPerParticipant,
+                },
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /:id/meal-settings — Set global meals per participant ───────────
+router.patch('/:id/meal-settings', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateEventMealSettingsSchema), async (req, res, next) => {
+    try {
+        const event = await prisma.campusEvent.update({
+            where: { id: req.params.id },
+            data: {
+                maxMealsPerParticipant: req.body.maxMealsPerParticipant,
+            },
+            select: {
+                id: true,
+                name: true,
+                maxMealsPerParticipant: true,
+            },
+        });
+
+        res.json({ success: true, data: { event } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /:id/participants/:participantId/meals — Edit participant meal usage ──
+router.patch('/:id/participants/:participantId/meals', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateParticipantMealsSchema), async (req, res, next) => {
+    try {
+        const [event, participant] = await Promise.all([
+            prisma.campusEvent.findUnique({
+                where: { id: req.params.id },
+                select: { id: true, maxMealsPerParticipant: true },
+            }),
+            prisma.eventParticipant.findFirst({
+                where: {
+                    id: req.params.participantId,
+                    eventId: req.params.id,
+                },
+                include: {
+                    _count: {
+                        select: {
+                            mealScans: true,
+                        },
+                    },
+                },
+            }),
+        ]);
+
+        if (!event) throw new AppError('Event not found', 404);
+        if (!participant) throw new AppError('Participant not found for this event', 404);
+
+        const currentConsumed = resolveParticipantConsumedMeals(participant);
+        const currentOverrideMax = Number.isInteger(participant.maxMealsAllowed) ? participant.maxMealsAllowed : null;
+
+        const nextMaxMeals = req.body.maxMealsAllowed !== undefined
+            ? req.body.maxMealsAllowed
+            : currentOverrideMax;
+        const nextConsumed = req.body.mealsConsumed !== undefined
+            ? req.body.mealsConsumed
+            : currentConsumed;
+
+        const effectiveMax = nextMaxMeals ?? event.maxMealsPerParticipant ?? null;
+        if (nextConsumed != null && effectiveMax != null && nextConsumed > effectiveMax) {
+            throw new AppError('Consumed meals cannot be greater than max allowed meals', 400, 'INVALID_MEAL_COUNT');
+        }
+
+        const updated = await prisma.eventParticipant.update({
+            where: { id: participant.id },
+            data: {
+                ...(req.body.maxMealsAllowed !== undefined ? { maxMealsAllowed: req.body.maxMealsAllowed } : {}),
+                ...(req.body.mealsConsumed !== undefined ? { mealsConsumed: req.body.mealsConsumed } : {}),
+            },
+            include: {
+                _count: {
+                    select: {
+                        mealScans: true,
+                    },
+                },
+            },
+        });
+
+        res.json({
+            success: true,
+            data: {
+                participant: {
+                    ...updated,
+                    mealStats: buildParticipantMealStats(updated, event.maxMealsPerParticipant),
+                },
             },
         });
     } catch (err) {
@@ -890,25 +1033,47 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         }
 
         if (payload.tokenType === 'MESS') {
-            const { start, end } = startAndEndOfDate(scannedAt);
-            const todayMealScans = await prisma.eventMealScan.findMany({
-                where: {
-                    eventId: event.id,
-                    scannedAt: { gte: start, lte: end },
-                    OR: [
-                        { participantId: participant.id },
-                        { studentId: req.user.id },
-                    ],
-                },
-                select: {
-                    mealNumber: true,
-                },
-                orderBy: { scannedAt: 'asc' },
-            });
+            const participantMaxMeals = Number.isInteger(participant.maxMealsAllowed) && participant.maxMealsAllowed > 0
+                ? participant.maxMealsAllowed
+                : null;
+            const eventMaxMeals = Number.isInteger(event.maxMealsPerParticipant) && event.maxMealsPerParticipant > 0
+                ? event.maxMealsPerParticipant
+                : null;
+            const effectiveMaxMeals = participantMaxMeals ?? eventMaxMeals;
 
-            const nextMeal = resolveNextMealFromHistory(todayMealScans);
-            const mealNumber = Number(nextMeal.mealNumber);
-            const mealLabel = String(nextMeal.mealLabel);
+            let consumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
+                ? participant.mealsConsumed
+                : null;
+
+            if (consumedMeals == null) {
+                consumedMeals = await prisma.eventMealScan.count({
+                    where: {
+                        eventId: event.id,
+                        OR: [
+                            { participantId: participant.id },
+                            { studentId: req.user.id },
+                        ],
+                    },
+                });
+            }
+
+            if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
+                return res.status(409).json({
+                    success: false,
+                    data: {
+                        result: 'MEAL_LIMIT_REACHED',
+                        badge: 'AMBER',
+                        message: `Meal quota reached (${consumedMeals}/${effectiveMaxMeals}). Contact event admin for update.`,
+                        consumedMeals,
+                        maxMealsAllowed: effectiveMaxMeals,
+                        remainingMeals: 0,
+                        eventName: event.name,
+                    },
+                });
+            }
+
+            const mealNumber = consumedMeals + 1;
+            const mealLabel = `Meal ${mealNumber}`;
 
             if (!confirmMeal) {
                 return res.status(409).json({
@@ -919,28 +1084,38 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                         message: `Confirm meal #${mealNumber} (${mealLabel}) to continue.`,
                         mealNumber,
                         mealLabel,
+                        consumedMeals,
+                        maxMealsAllowed: effectiveMaxMeals,
+                        remainingMeals: effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumedMeals, 0),
                         eventName: event.name,
                     },
                 });
             }
 
-            const mealScan = await prisma.eventMealScan.create({
-                data: {
-                    eventId: event.id,
-                    participantId: participant.id,
-                    studentId: req.user.id,
-                    mealRuleId: null,
-                    mealNumber,
-                    mealLabel,
-                    scannedAt,
-                    metadata: {
-                        latitude: Number.isFinite(latitude) ? latitude : null,
-                        longitude: Number.isFinite(longitude) ? longitude : null,
-                        accuracy: Number.isFinite(accuracy) ? accuracy : null,
-                        actorEmail: req.user.email,
+            const nextConsumedMeals = consumedMeals + 1;
+            const [mealScan] = await prisma.$transaction([
+                prisma.eventMealScan.create({
+                    data: {
+                        eventId: event.id,
+                        participantId: participant.id,
+                        studentId: req.user.id,
+                        mealRuleId: null,
+                        mealNumber,
+                        mealLabel,
+                        scannedAt,
+                        metadata: {
+                            latitude: Number.isFinite(latitude) ? latitude : null,
+                            longitude: Number.isFinite(longitude) ? longitude : null,
+                            accuracy: Number.isFinite(accuracy) ? accuracy : null,
+                            actorEmail: req.user.email,
+                        },
                     },
-                },
-            });
+                }),
+                prisma.eventParticipant.update({
+                    where: { id: participant.id },
+                    data: { mealsConsumed: nextConsumedMeals },
+                }),
+            ]);
 
             return res.json({
                 success: true,
@@ -950,6 +1125,9 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     message: `Meal #${mealNumber} (${mealLabel}) confirmed.`,
                     mealNumber,
                     mealLabel,
+                    consumedMeals: nextConsumedMeals,
+                    maxMealsAllowed: effectiveMaxMeals,
+                    remainingMeals: effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - nextConsumedMeals, 0),
                     scanEventId: mealScan.id,
                     eventName: event.name,
                 },
