@@ -5,6 +5,7 @@
 const cron = require('node-cron');
 const logger = require('../config/logger');
 const { scheduleOverdueReminders, scheduleAttendanceAlerts, scheduleHostellerCurfewAlerts } = require('../services/notification.service');
+const { sendDailyEventReports } = require('../services/eventReports.service');
 
 // Daily at 8:00 AM — overdue library reminders
 cron.schedule('0 8 * * *', async () => {
@@ -35,5 +36,16 @@ cron.schedule('*/5 * * * *', async () => {
         logger.error('[CRON] Curfew alerts failed:', err);
     }
 });
+
+// Daily at 8:00 PM IST — event stay/mess CSV report emails
+cron.schedule('0 20 * * *', async () => {
+    logger.info('[CRON] Running event daily report emails...');
+    try {
+        const outcomes = await sendDailyEventReports(new Date());
+        logger.info('[CRON] Event report email outcomes', { total: outcomes.length, outcomes });
+    } catch (err) {
+        logger.error('[CRON] Event daily report emails failed:', err);
+    }
+}, { timezone: 'Asia/Kolkata' });
 
 logger.info('⏰ Scheduled jobs registered');

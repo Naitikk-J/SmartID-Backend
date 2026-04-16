@@ -1000,9 +1000,10 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
     try {
         const studentId = req.user.id;
         const { limit = 20 } = req.query;
+        const parsedLimit = parseInt(limit, 10);
 
-        // Fetch both scan events and face detections
-        const [scanEvents, faceLogs] = await Promise.all([
+        // Fetch scan events, face detections, and event-specific stay/mess logs.
+        const [scanEvents, faceLogs, eventStayLogs, eventMealLogs] = await Promise.all([
             prisma.scanEvent.findMany({
                 where: {
                     studentId,
@@ -1011,7 +1012,7 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
                     },
                 },
                 orderBy: { scannedAt: 'desc' },
-                take: parseInt(limit),
+                take: parsedLimit,
                 select: {
                     id: true,
                     scannedAt: true,
@@ -1024,7 +1025,31 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
             prisma.faceDetectionLog.findMany({
                 where: { studentId },
                 orderBy: { timestamp: 'desc' },
-                take: parseInt(limit),
+                take: parsedLimit,
+            }),
+            prisma.eventStayScan.findMany({
+                where: { studentId },
+                orderBy: { scannedAt: 'desc' },
+                take: parsedLimit,
+                include: {
+                    event: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
+            }),
+            prisma.eventMealScan.findMany({
+                where: { studentId },
+                orderBy: { scannedAt: 'desc' },
+                take: parsedLimit,
+                include: {
+                    event: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
             }),
         ]);
 
@@ -1046,7 +1071,23 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
                 result: 'VERIFIED',
                 gate: l.source || 'Face Gate',
             })),
-        ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, parseInt(limit));
+            ...eventStayLogs.map((log) => ({
+                id: log.id,
+                type: 'EVENT_STAY',
+                direction: log.direction,
+                time: log.scannedAt,
+                result: log.result || 'VERIFIED',
+                gate: log.gateLabel || `${log.event?.name || 'Event'} Gate`,
+            })),
+            ...eventMealLogs.map((log) => ({
+                id: log.id,
+                type: 'EVENT_MEAL',
+                direction: 'ENTRY',
+                time: log.scannedAt,
+                result: 'MEAL_CONFIRMED',
+                gate: `${log.event?.name || 'Event'} • Meal ${log.mealNumber}`,
+            })),
+        ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, parsedLimit);
 
         res.json({
             success: true,

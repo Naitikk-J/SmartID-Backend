@@ -46,6 +46,14 @@ const envSchema = z.object({
     ACCESS_QR_TTL_SECONDS: z.coerce.number().int().min(10).max(120).default(30),
     ACCESS_REQUIRE_GEOFENCE: z.string().default('false'),
 
+    // SMTP mail (optional, used for scheduled event CSV reports)
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: z.coerce.number().optional(),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
+
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),
 });

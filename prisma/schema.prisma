@@ -137,6 +137,9 @@ model Student {
   deviceRebindRequests DeviceRebindRequest[]
   lateReturnRequests   LateReturnRequest[]
   scanSyncAudits       ScanSyncAudit[]
+  eventParticipants    EventParticipant[]
+  eventStayScans       EventStayScan[]
+  eventMealScans       EventMealScan[]
 
   @@index([studentType])
   @@map("students")
@@ -282,6 +285,11 @@ model CampusEvent {
   id          String     @id @default(auto()) @map("_id") @db.ObjectId
   name        String
   description String?
+  isStayHostel Boolean   @default(false)
+  hostelGateLabel String?
+  reportRecipients String[] @default([])
+  timezone    String     @default("Asia/Kolkata")
+  importedCount Int      @default(0)
   eventDate   DateTime
   startTime   DateTime
   endTime     DateTime
@@ -294,8 +302,103 @@ model CampusEvent {
   createdAt   DateTime   @default(now())
 
   createdBy   AdminUser  @relation(fields: [createdById], references: [id])
+  participants EventParticipant[]
+  stayScans   EventStayScan[]
+  messRules   EventMessRule[]
+  mealScans   EventMealScan[]
 
   @@map("campus_events")
+}
+
+model EventParticipant {
+  id                 String      @id @default(auto()) @map("_id") @db.ObjectId
+  eventId            String      @db.ObjectId
+  studentId          String?     @db.ObjectId
+  enrollmentNo       String?
+  fullName           String
+  email              String
+  phone              String
+  loginId            String
+  passwordHint       String?
+  isActive           Boolean     @default(true)
+  credentialsIssuedAt DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  event              CampusEvent @relation(fields: [eventId], references: [id])
+  student            Student?    @relation(fields: [studentId], references: [id])
+  stayScans          EventStayScan[]
+  mealScans          EventMealScan[]
+
+  @@index([eventId, email])
+  @@index([eventId, loginId])
+  @@index([studentId])
+  @@map("event_participants")
+}
+
+model EventStayScan {
+  id            String            @id @default(auto()) @map("_id") @db.ObjectId
+  eventId       String            @db.ObjectId
+  participantId String?           @db.ObjectId
+  studentId     String?           @db.ObjectId
+  direction     ExitDirection
+  scanMode      String            @default("DYNAMIC_QR")
+  gateLabel     String?
+  result        String            @default("VERIFIED")
+  scannedAt     DateTime          @default(now())
+  metadata      Json?
+
+  event         CampusEvent       @relation(fields: [eventId], references: [id])
+  participant   EventParticipant? @relation(fields: [participantId], references: [id])
+  student       Student?          @relation(fields: [studentId], references: [id])
+
+  @@index([eventId, scannedAt])
+  @@index([participantId, scannedAt])
+  @@index([studentId, scannedAt])
+  @@map("event_stay_scans")
+}
+
+model EventMessRule {
+  id         String       @id @default(auto()) @map("_id") @db.ObjectId
+  eventId    String       @db.ObjectId
+  mealNumber Int
+  mealLabel  String
+  startTime  String
+  endTime    String
+  isActive   Boolean      @default(true)
+  qrToken    String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  event      CampusEvent  @relation(fields: [eventId], references: [id])
+  mealScans  EventMealScan[]
+
+  @@unique([eventId, mealNumber])
+  @@index([eventId, isActive])
+  @@map("event_mess_rules")
+}
+
+model EventMealScan {
+  id            String            @id @default(auto()) @map("_id") @db.ObjectId
+  eventId       String            @db.ObjectId
+  participantId String?           @db.ObjectId
+  studentId     String?           @db.ObjectId
+  mealRuleId    String?           @db.ObjectId
+  mealNumber    Int
+  mealLabel     String
+  scannedAt     DateTime          @default(now())
+  metadata      Json?
+
+  event         CampusEvent       @relation(fields: [eventId], references: [id])
+  participant   EventParticipant? @relation(fields: [participantId], references: [id])
+  student       Student?          @relation(fields: [studentId], references: [id])
+  mealRule      EventMessRule?    @relation(fields: [mealRuleId], references: [id])
+
+  @@index([eventId, scannedAt])
+  @@index([participantId, scannedAt])
+  @@index([studentId, scannedAt])
+  @@index([eventId, mealNumber, scannedAt])
+  @@map("event_meal_scans")
 }
 
 model Subject {
