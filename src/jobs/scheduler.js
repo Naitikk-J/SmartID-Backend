@@ -4,7 +4,7 @@
 
 const cron = require('node-cron');
 const logger = require('../config/logger');
-const { scheduleOverdueReminders, scheduleAttendanceAlerts } = require('../services/notification.service');
+const { scheduleOverdueReminders, scheduleAttendanceAlerts, scheduleHostellerCurfewAlerts } = require('../services/notification.service');
 
 // Daily at 8:00 AM — overdue library reminders
 cron.schedule('0 8 * * *', async () => {
@@ -23,6 +23,16 @@ cron.schedule('0 18 * * *', async () => {
         await scheduleAttendanceAlerts();
     } catch (err) {
         logger.error('[CRON] Attendance alerts failed:', err);
+    }
+});
+
+// Every 5 minutes — hosteller curfew reminder + crossed warnings.
+cron.schedule('*/5 * * * *', async () => {
+    logger.info('[CRON] Running hosteller curfew alerts...');
+    try {
+        await scheduleHostellerCurfewAlerts();
+    } catch (err) {
+        logger.error('[CRON] Curfew alerts failed:', err);
     }
 });
 

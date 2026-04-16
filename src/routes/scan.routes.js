@@ -420,6 +420,18 @@ const faceExtractSchema = z.object({
     streamId: z.string().optional(),
 });
 
+const offlineSyncAuditSchema = z.object({
+    status: z.enum(['QUEUED', 'SYNCED', 'FAILED']),
+    scanEventId: z.string().optional().nullable(),
+    qrTokenHash: z.string().max(128).optional().nullable(),
+    eventType: z.string().max(40).optional().nullable(),
+    gateLabel: z.string().max(80).optional().nullable(),
+    deviceTimestamp: z.string().optional().nullable(),
+    syncedAt: z.string().optional().nullable(),
+    failureReason: z.string().max(240).optional().nullable(),
+    payload: z.record(z.any()).optional().nullable(),
+});
+
 router.post(
     '/face-extract',
     authenticate,
@@ -1039,6 +1051,39 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
         res.json({
             success: true,
             data: merged,
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /offline-sync-audit — mobile offline queue reconciliation trail
+router.post('/offline-sync-audit', authenticate, requireRole('STUDENT'), validate(offlineSyncAuditSchema), async (req, res, next) => {
+    try {
+        const data = req.body;
+
+        const audit = await prisma.scanSyncAudit.create({
+            data: {
+                studentId: req.user.id,
+                scanEventId: data.scanEventId || null,
+                status: data.status,
+                qrTokenHash: data.qrTokenHash || null,
+                eventType: data.eventType || null,
+                gateLabel: data.gateLabel || null,
+                deviceTimestamp: data.deviceTimestamp ? new Date(data.deviceTimestamp) : null,
+                syncedAt: data.syncedAt ? new Date(data.syncedAt) : (data.status === 'SYNCED' ? new Date() : null),
+                failureReason: data.failureReason || null,
+                payload: data.payload || null,
+            },
+        });
+
+        res.status(201).json({
+            success: true,
+            data: {
+                id: audit.id,
+                status: audit.status,
+                createdAt: audit.createdAt,
+            },
         });
     } catch (err) {
         next(err);

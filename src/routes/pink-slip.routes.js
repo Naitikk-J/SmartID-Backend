@@ -11,6 +11,25 @@ const { AppError } = require('../middleware/errorHandler');
 const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
+const OBJECT_ID_REGEX = /^[a-f\d]{24}$/i;
+
+function toTicketId(id) {
+    return `PS-${String(id || '').toUpperCase()}`;
+}
+
+function mapPinkSlipResponse(item) {
+    if (!item) return item;
+    return {
+        ...item,
+        ticketId: toTicketId(item.id),
+    };
+}
+
+function normalizeTicketInput(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    return raw.replace(/^PS-/i, '').toLowerCase();
+}
 
 // Validation schemas
 const createPinkSlipSchema = z.object({
@@ -41,7 +60,7 @@ router.post('/', authenticate, requireRole('STUDENT'), validate(createPinkSlipSc
 
         res.status(201).json({
             success: true,
-            data: pinkSlip,
+            data: mapPinkSlipResponse(pinkSlip),
         });
     } catch (err) {
         next(err);
@@ -58,7 +77,7 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
 
         res.json({
             success: true,
-            data: pinkSlips,
+            data: pinkSlips.map(mapPinkSlipResponse),
         });
     } catch (err) {
         console.error(' [PinkSlip] Get My Requests Error:', err);
@@ -109,7 +128,7 @@ router.get('/', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), async
         res.json({
             success: true,
             data: {
-                pinkSlips,
+                pinkSlips: pinkSlips.map(mapPinkSlipResponse),
                 total,
                 page: parseInt(page),
                 limit: parseInt(limit),
@@ -118,6 +137,53 @@ router.get('/', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), async
         });
     } catch (err) {
         console.error(' [PinkSlip] Admin List Error:', err);
+        next(err);
+    }
+});
+
+// ── Admins: Get request by ticket id ─────────────────────────
+router.get('/ticket/:ticketId', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'FACULTY', 'SECURITY_GUARD'), async (req, res, next) => {
+    try {
+        const normalized = normalizeTicketInput(req.params.ticketId);
+        if (!normalized || !OBJECT_ID_REGEX.test(normalized)) {
+            throw new AppError('Invalid ticket id format', 400, 'INVALID_TICKET_ID');
+        }
+
+        const pinkSlip = await prisma.pinkSlip.findUnique({
+            where: { id: normalized },
+            include: {
+                student: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        enrollmentNo: true,
+                        department: true,
+                        studentType: true,
+                        phone: true,
+                        email: true,
+                        roomNo: true,
+                    },
+                },
+                approvedBy: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true,
+                        role: true,
+                    },
+                },
+            },
+        });
+
+        if (!pinkSlip) {
+            throw new AppError('Pink slip ticket not found', 404, 'PINK_SLIP_NOT_FOUND');
+        }
+
+        res.json({
+            success: true,
+            data: mapPinkSlipResponse(pinkSlip),
+        });
+    } catch (err) {
         next(err);
     }
 });
@@ -146,7 +212,7 @@ router.patch('/:id', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), 
 
         res.json({
             success: true,
-            data: pinkSlip,
+            data: mapPinkSlipResponse(pinkSlip),
         });
     } catch (err) {
         next(err);

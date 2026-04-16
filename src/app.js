@@ -43,6 +43,7 @@ let qrRoutes;
 let pinkSlipRoutes;
 let alertRoutes;
 let curfewRoutes;
+let lateReturnRoutes;
 
 try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
 try { scanRoutes = require('./routes/scan.routes'); } catch (err) { scanRoutes = routeFallback('scan', err); }
@@ -59,6 +60,7 @@ try { qrRoutes = require('./routes/qr.routes'); } catch (err) { qrRoutes = route
 try { pinkSlipRoutes = require('./routes/pink-slip.routes'); } catch (err) { pinkSlipRoutes = routeFallback('pink-slip', err); }
 try { alertRoutes = require('./routes/alerts.routes'); } catch (err) { alertRoutes = routeFallback('alerts', err); }
 try { curfewRoutes = require('./routes/curfew.routes'); } catch (err) { curfewRoutes = routeFallback('curfew', err); }
+try { lateReturnRoutes = require('./routes/late-return.routes'); } catch (err) { lateReturnRoutes = routeFallback('late-return', err); }
 
 
 const app = express();
@@ -147,6 +149,7 @@ app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/qr', qrRoutes);
 app.use('/api/v1/alerts', alertRoutes);
 app.use('/api/v1/rules/curfew', curfewRoutes);
+app.use('/api/v1/late-return', lateReturnRoutes);
 
 // ── 8. 404 handler ──────────────────────────────────────────
 app.all('*', (req, res, next) => {

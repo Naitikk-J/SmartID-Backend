@@ -75,6 +75,19 @@ enum RebindRequestStatus {
   REJECTED
 }
 
+enum LateReturnStatus {
+  PENDING
+  ACKNOWLEDGED
+  RESOLVED
+  REJECTED
+}
+
+enum ScanSyncStatus {
+  QUEUED
+  SYNCED
+  FAILED
+}
+
 // ─── Models ──────────────────────────────────────────────────
 
 model Student {
@@ -122,6 +135,8 @@ model Student {
   pinkSlips            PinkSlip[]
   authLogs             StudentAuthLog[]
   deviceRebindRequests DeviceRebindRequest[]
+  lateReturnRequests   LateReturnRequest[]
+  scanSyncAudits       ScanSyncAudit[]
 
   @@index([studentType])
   @@map("students")
@@ -170,6 +185,7 @@ model AdminUser {
   auditLogs           AuditLog[]
   approvedPinkSlips   PinkSlip[]       @relation("ApprovedPinkSlips")
   processedRebindRequests DeviceRebindRequest[] @relation("ProcessedRebindRequests")
+  acknowledgedLateReturns LateReturnRequest[] @relation("AcknowledgedLateReturns")
   gateId              String?      @db.ObjectId
   gate                Gate?        @relation(fields: [gateId], references: [id])
 
@@ -529,4 +545,46 @@ model PinkSlip {
   approvedBy   AdminUser?     @relation("ApprovedPinkSlips", fields: [approvedById], references: [id])
 
   @@map("pink_slips")
+}
+
+model LateReturnRequest {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  studentId      String           @db.ObjectId
+  eta            DateTime
+  reason         String
+  latitude       Float?
+  longitude      Float?
+  status         LateReturnStatus @default(PENDING)
+  adminNote      String?
+  acknowledgedById String?        @db.ObjectId
+  requestedAt    DateTime         @default(now())
+  processedAt    DateTime?
+
+  student        Student          @relation(fields: [studentId], references: [id])
+  acknowledgedBy AdminUser?       @relation("AcknowledgedLateReturns", fields: [acknowledgedById], references: [id])
+
+  @@index([studentId, requestedAt])
+  @@index([status, requestedAt])
+  @@map("late_return_requests")
+}
+
+model ScanSyncAudit {
+  id             String         @id @default(auto()) @map("_id") @db.ObjectId
+  studentId      String         @db.ObjectId
+  scanEventId    String?        @db.ObjectId
+  status         ScanSyncStatus @default(QUEUED)
+  qrTokenHash    String?
+  eventType      String?
+  gateLabel      String?
+  deviceTimestamp DateTime?
+  syncedAt       DateTime?
+  failureReason  String?
+  payload        Json?
+  createdAt      DateTime       @default(now())
+
+  student        Student        @relation(fields: [studentId], references: [id])
+
+  @@index([studentId, createdAt])
+  @@index([status, createdAt])
+  @@map("scan_sync_audits")
 }

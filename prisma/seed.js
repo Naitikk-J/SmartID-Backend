@@ -12,6 +12,8 @@ async function main() {
 
     // 1. Clean existing data
     await prisma.deviceRebindRequest.deleteMany({});
+    await prisma.lateReturnRequest.deleteMany({});
+    await prisma.scanSyncAudit.deleteMany({});
     await prisma.studentAuthLog.deleteMany({});
     await prisma.auditLog.deleteMany({});
     await prisma.vote.deleteMany({});
