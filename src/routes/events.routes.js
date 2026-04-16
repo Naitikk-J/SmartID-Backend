@@ -312,49 +312,25 @@ function nextDirectionalState(lastDirection) {
     return 'ENTRY';
 }
 
-function parseTimeToMinutes(value) {
-    const str = String(value || '').trim();
-    const match = str.match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
-
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
-    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-
-    return (hours * 60) + minutes;
-}
-
-function getScanMinutes(dateLike) {
-    const date = new Date(dateLike);
-    return (date.getHours() * 60) + date.getMinutes();
-}
-
-function isMinuteInWindow(minute, startMinute, endMinute) {
-    if (!Number.isInteger(startMinute) || !Number.isInteger(endMinute)) return false;
-    if (startMinute <= endMinute) {
-        return minute >= startMinute && minute <= endMinute;
-    }
-    // Overnight window (example 22:00 to 06:00)
-    return minute >= startMinute || minute <= endMinute;
-}
-
-function resolveMealRuleForScan(rules, scannedAt, tokenMealNumber) {
-    if (!Array.isArray(rules) || rules.length === 0) return null;
-
-    if (Number.isInteger(tokenMealNumber) && tokenMealNumber > 0) {
-        return rules.find((rule) => rule.mealNumber === tokenMealNumber) || null;
+function resolveNextMealFromHistory(todayMealScans) {
+    if (!Array.isArray(todayMealScans) || todayMealScans.length === 0) {
+        return {
+            mealNumber: 1,
+            mealLabel: 'Meal 1',
+        };
     }
 
-    const scanMinute = getScanMinutes(scannedAt);
-    const activeByTime = rules.find((rule) => {
-        const startMinute = parseTimeToMinutes(rule.startTime);
-        const endMinute = parseTimeToMinutes(rule.endTime);
-        return isMinuteInWindow(scanMinute, startMinute, endMinute);
-    });
+    const maxMeal = todayMealScans.reduce((acc, row) => {
+        const current = Number(row?.mealNumber || 0);
+        if (!Number.isInteger(current) || current < 1) return acc;
+        return Math.max(acc, current);
+    }, 0);
 
-    if (activeByTime) return activeByTime;
-    return rules[0] || null;
+    const nextMealNumber = Math.max(1, maxMeal + 1);
+    return {
+        mealNumber: nextMealNumber,
+        mealLabel: `Meal ${nextMealNumber}`,
+    };
 }
 
 function sanitizePhone(value) {
@@ -914,29 +890,25 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         }
 
         if (payload.tokenType === 'MESS') {
-            const activeRules = await prisma.eventMessRule.findMany({
+            const { start, end } = startAndEndOfDate(scannedAt);
+            const todayMealScans = await prisma.eventMealScan.findMany({
                 where: {
                     eventId: event.id,
-                    isActive: true,
+                    scannedAt: { gte: start, lte: end },
+                    OR: [
+                        { participantId: participant.id },
+                        { studentId: req.user.id },
+                    ],
                 },
-                orderBy: { mealNumber: 'asc' },
+                select: {
+                    mealNumber: true,
+                },
+                orderBy: { scannedAt: 'asc' },
             });
 
-            const resolvedRule = resolveMealRuleForScan(activeRules, scannedAt, payload.mealNumber || null);
-
-            if (!resolvedRule) {
-                return res.status(400).json({
-                    success: false,
-                    data: {
-                        result: 'MEAL_RULE_NOT_FOUND',
-                        badge: 'RED',
-                        message: 'No active mess rule found for this event.',
-                    },
-                });
-            }
-
-            const mealNumber = Number(resolvedRule.mealNumber);
-            const mealLabel = String(resolvedRule.mealLabel || payload.mealLabel || `Meal ${mealNumber}`);
+            const nextMeal = resolveNextMealFromHistory(todayMealScans);
+            const mealNumber = Number(nextMeal.mealNumber);
+            const mealLabel = String(nextMeal.mealLabel);
 
             if (!confirmMeal) {
                 return res.status(409).json({
@@ -952,38 +924,12 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 });
             }
 
-            const { start, end } = startAndEndOfDate(scannedAt);
-            const alreadyTaken = await prisma.eventMealScan.findFirst({
-                where: {
-                    eventId: event.id,
-                    mealNumber,
-                    scannedAt: { gte: start, lte: end },
-                    OR: [
-                        { participantId: participant.id },
-                        { studentId: req.user.id },
-                    ],
-                },
-            });
-
-            if (alreadyTaken) {
-                return res.status(409).json({
-                    success: false,
-                    data: {
-                        result: 'MEAL_ALREADY_TAKEN',
-                        badge: 'RED',
-                        message: `Meal #${mealNumber} already confirmed today.`,
-                        mealNumber,
-                        mealLabel,
-                    },
-                });
-            }
-
             const mealScan = await prisma.eventMealScan.create({
                 data: {
                     eventId: event.id,
                     participantId: participant.id,
                     studentId: req.user.id,
-                    mealRuleId: resolvedRule.id,
+                    mealRuleId: null,
                     mealNumber,
                     mealLabel,
                     scannedAt,
