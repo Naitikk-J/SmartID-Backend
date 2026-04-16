@@ -53,7 +53,7 @@ function createEventStayQrToken({ eventId, eventName, createdById, ttlSeconds = 
     };
 }
 
-function createEventMessQrToken({ eventId, mealNumber, mealLabel, eventEndsAt }) {
+function createEventMessQrToken({ eventId, mealNumber = null, mealLabel = null, eventEndsAt }) {
     const nowSec = Math.floor(Date.now() / 1000);
     let expSec = nowSec + 60 * 60 * 24 * 30;
 
@@ -65,8 +65,8 @@ function createEventMessQrToken({ eventId, mealNumber, mealLabel, eventEndsAt })
         v: EVENT_MESS_QR_VERSION,
         typ: 'event_mess_qr',
         eid: String(eventId),
-        meal: Number(mealNumber),
-        mlb: mealLabel ? String(mealLabel) : `Meal ${mealNumber}`,
+        meal: Number.isInteger(Number(mealNumber)) && Number(mealNumber) > 0 ? Number(mealNumber) : null,
+        mlb: mealLabel ? String(mealLabel) : null,
         iat: nowSec,
         exp: expSec,
     };
@@ -149,8 +149,10 @@ function verifyEventQrToken(token) {
     const messResult = verifySignedToken(EVENT_MESS_QR_VERSION, token);
     if (messResult.valid) {
         const payload = messResult.payload || {};
-        const mealNumber = Number(payload.meal);
-        if (payload.typ !== 'event_mess_qr' || !payload.eid || !Number.isInteger(mealNumber) || mealNumber < 1) {
+        const maybeMealNumber = Number(payload.meal);
+        const mealNumber = Number.isInteger(maybeMealNumber) && maybeMealNumber > 0 ? maybeMealNumber : null;
+
+        if (payload.typ !== 'event_mess_qr' || !payload.eid) {
             return { format: 'event_mess', valid: false, reason: 'MALFORMED' };
         }
 
@@ -160,7 +162,7 @@ function verifyEventQrToken(token) {
             payload: {
                 eventId: String(payload.eid),
                 mealNumber,
-                mealLabel: payload.mlb ? String(payload.mlb) : `Meal ${mealNumber}`,
+                mealLabel: payload.mlb ? String(payload.mlb) : null,
                 expiresAt: new Date(Number(payload.exp) * 1000),
                 tokenType: 'MESS',
             },

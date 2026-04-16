@@ -275,14 +275,12 @@ async function replaceMessRulesForEvent(event, rules) {
     await prisma.eventMessRule.deleteMany({ where: { eventId: event.id } });
     const created = [];
 
-    for (const rule of rules) {
-        const qr = createEventMessQrToken({
-            eventId: event.id,
-            mealNumber: rule.mealNumber,
-            mealLabel: rule.mealLabel,
-            eventEndsAt: new Date(event.endTime),
-        });
+    const sharedQr = createEventMessQrToken({
+        eventId: event.id,
+        eventEndsAt: new Date(event.endTime),
+    });
 
+    for (const rule of rules) {
         const saved = await prisma.eventMessRule.create({
             data: {
                 eventId: event.id,
@@ -291,7 +289,7 @@ async function replaceMessRulesForEvent(event, rules) {
                 startTime: rule.startTime,
                 endTime: rule.endTime,
                 isActive: rule.isActive !== false,
-                qrToken: qr.token,
+                qrToken: sharedQr.token,
             },
         });
 
@@ -312,6 +310,51 @@ function startAndEndOfDate(dateInput) {
 function nextDirectionalState(lastDirection) {
     if (lastDirection === 'ENTRY') return 'EXIT';
     return 'ENTRY';
+}
+
+function parseTimeToMinutes(value) {
+    const str = String(value || '').trim();
+    const match = str.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+    return (hours * 60) + minutes;
+}
+
+function getScanMinutes(dateLike) {
+    const date = new Date(dateLike);
+    return (date.getHours() * 60) + date.getMinutes();
+}
+
+function isMinuteInWindow(minute, startMinute, endMinute) {
+    if (!Number.isInteger(startMinute) || !Number.isInteger(endMinute)) return false;
+    if (startMinute <= endMinute) {
+        return minute >= startMinute && minute <= endMinute;
+    }
+    // Overnight window (example 22:00 to 06:00)
+    return minute >= startMinute || minute <= endMinute;
+}
+
+function resolveMealRuleForScan(rules, scannedAt, tokenMealNumber) {
+    if (!Array.isArray(rules) || rules.length === 0) return null;
+
+    if (Number.isInteger(tokenMealNumber) && tokenMealNumber > 0) {
+        return rules.find((rule) => rule.mealNumber === tokenMealNumber) || null;
+    }
+
+    const scanMinute = getScanMinutes(scannedAt);
+    const activeByTime = rules.find((rule) => {
+        const startMinute = parseTimeToMinutes(rule.startTime);
+        const endMinute = parseTimeToMinutes(rule.endTime);
+        return isMinuteInWindow(scanMinute, startMinute, endMinute);
+    });
+
+    if (activeByTime) return activeByTime;
+    return rules[0] || null;
 }
 
 function sanitizePhone(value) {
@@ -704,27 +747,25 @@ router.get('/:id/mess/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
             orderBy: { mealNumber: 'asc' },
         });
 
+        const sharedQr = createEventMessQrToken({
+            eventId: event.id,
+            eventEndsAt: new Date(event.endTime),
+        });
+
         const hydrated = [];
         for (const rule of rules) {
-            if (rule.qrToken) {
+            if (rule.qrToken !== sharedQr.token) {
+                const updated = await prisma.eventMessRule.update({
+                    where: { id: rule.id },
+                    data: { qrToken: sharedQr.token },
+                });
+                hydrated.push(updated);
+            } else {
                 hydrated.push(rule);
-                continue;
             }
-
-            const token = createEventMessQrToken({
-                eventId: event.id,
-                mealNumber: rule.mealNumber,
-                mealLabel: rule.mealLabel,
-                eventEndsAt: new Date(event.endTime),
-            });
-            const updated = await prisma.eventMessRule.update({
-                where: { id: rule.id },
-                data: { qrToken: token.token },
-            });
-            hydrated.push(updated);
         }
 
-        res.json({ success: true, data: { rules: hydrated } });
+        res.json({ success: true, data: { sharedQrToken: sharedQr.token, rules: hydrated } });
     } catch (err) {
         next(err);
     }
@@ -873,8 +914,29 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         }
 
         if (payload.tokenType === 'MESS') {
-            const mealNumber = Number(payload.mealNumber);
-            const mealLabel = String(payload.mealLabel || `Meal ${mealNumber}`);
+            const activeRules = await prisma.eventMessRule.findMany({
+                where: {
+                    eventId: event.id,
+                    isActive: true,
+                },
+                orderBy: { mealNumber: 'asc' },
+            });
+
+            const resolvedRule = resolveMealRuleForScan(activeRules, scannedAt, payload.mealNumber || null);
+
+            if (!resolvedRule) {
+                return res.status(400).json({
+                    success: false,
+                    data: {
+                        result: 'MEAL_RULE_NOT_FOUND',
+                        badge: 'RED',
+                        message: 'No active mess rule found for this event.',
+                    },
+                });
+            }
+
+            const mealNumber = Number(resolvedRule.mealNumber);
+            const mealLabel = String(resolvedRule.mealLabel || payload.mealLabel || `Meal ${mealNumber}`);
 
             if (!confirmMeal) {
                 return res.status(409).json({
@@ -886,26 +948,6 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                         mealNumber,
                         mealLabel,
                         eventName: event.name,
-                    },
-                });
-            }
-
-            const rule = await prisma.eventMessRule.findFirst({
-                where: {
-                    eventId: event.id,
-                    mealNumber,
-                    isActive: true,
-                },
-            });
-
-            if (!rule) {
-                return res.status(400).json({
-                    success: false,
-                    data: {
-                        result: 'MEAL_RULE_NOT_FOUND',
-                        badge: 'RED',
-                        message: 'Meal rule is not available for this event.',
-                        mealNumber,
                     },
                 });
             }
@@ -941,7 +983,7 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     eventId: event.id,
                     participantId: participant.id,
                     studentId: req.user.id,
-                    mealRuleId: rule.id,
+                    mealRuleId: resolvedRule.id,
                     mealNumber,
                     mealLabel,
                     scannedAt,
