@@ -55,10 +55,17 @@ function createEventStayQrToken({ eventId, eventName, createdById, ttlSeconds = 
 
 function createEventMessQrToken({ eventId, mealNumber = null, mealLabel = null, eventEndsAt }) {
     const nowSec = Math.floor(Date.now() / 1000);
-    let expSec = nowSec + 60 * 60 * 24 * 30;
+    const defaultTtlSec = 60 * 60 * 24 * 30;
+    let expSec = nowSec + defaultTtlSec;
 
     if (eventEndsAt instanceof Date && Number.isFinite(eventEndsAt.getTime())) {
-        expSec = Math.floor(eventEndsAt.getTime() / 1000);
+        const eventEndSec = Math.floor(eventEndsAt.getTime() / 1000);
+
+        // If event end is in the past (while event record is still active), avoid minting
+        // immediately expired tokens. Event activation checks in scan route still enforce flow.
+        if (eventEndSec > nowSec + 60) {
+            expSec = eventEndSec;
+        }
     }
 
     const payload = {
