@@ -5,6 +5,7 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
 const { z } = require('zod');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
@@ -22,6 +23,7 @@ const {
 } = require('../services/eventReports.service');
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']);
 
@@ -312,6 +314,125 @@ function nextDirectionalState(lastDirection) {
     return 'ENTRY';
 }
 
+function sanitizePhone(value) {
+    const digits = String(value || '').replace(/\D/g, '');
+    return digits.length >= 10 ? digits.slice(-10) : null;
+}
+
+function parseNameChunks(nameChunk) {
+    const cleaned = String(nameChunk || '').trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+        return { fullName: '' };
+    }
+
+    const tokens = cleaned.split(' ');
+    const titleIndex = tokens.findIndex((token) => /^(mr|mrs|ms|dr|shri|smt)\.?$/i.test(token));
+
+    if (titleIndex > 0) {
+        return {
+            fullName: tokens.slice(0, titleIndex).join(' '),
+        };
+    }
+
+    if (tokens.length > 4) {
+        return {
+            fullName: tokens.slice(0, 4).join(' '),
+        };
+    }
+
+    return { fullName: cleaned };
+}
+
+function extractParticipantsFromPdfText(pdfText) {
+    const lines = String(pdfText || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+    const groupedRows = [];
+    let current = '';
+
+    for (const line of lines) {
+        const startsLikeRow = /^\d+\s+/.test(line) || /@/.test(line);
+        if (startsLikeRow && current) {
+            groupedRows.push(current);
+            current = line;
+        } else if (startsLikeRow) {
+            current = line;
+        } else if (current) {
+            current += ` ${line}`;
+        }
+    }
+    if (current) groupedRows.push(current);
+
+    if (!groupedRows.length) {
+        groupedRows.push(...lines);
+    }
+
+    const parsed = [];
+    for (const rawRow of groupedRows) {
+        const row = rawRow.replace(/\s+/g, ' ').trim();
+
+        const strictMatch = row.match(/^\d+\s+(\S+)\s+([A-Za-z0-9]{6,})\s+(.+?)\s+(\d{10})\s+(\d{10})\s+([^\s]+@[^\s]+)\b/i);
+        if (strictMatch) {
+            const [, allottedNo, enrollmentNo, nameChunkRaw, fatherMobile, phone, email] = strictMatch;
+            const { fullName } = parseNameChunks(nameChunkRaw);
+            const chosenPhone = sanitizePhone(phone) || sanitizePhone(fatherMobile);
+
+            if (fullName && email && chosenPhone) {
+                parsed.push({
+                    fullName,
+                    email: String(email).trim().toLowerCase(),
+                    phone: chosenPhone,
+                    enrollmentNo: String(enrollmentNo || allottedNo || '').trim() || null,
+                });
+                continue;
+            }
+        }
+
+        const emailMatch = row.match(/([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+        const phoneMatches = row.match(/(?:\+91[-\s]?)?\d{10}\b/g) || [];
+        const email = emailMatch ? emailMatch[1].toLowerCase() : '';
+        const phone = sanitizePhone(phoneMatches[0]);
+
+        if (!email || !phone) continue;
+
+        const beforeEmail = row.slice(0, row.indexOf(email)).trim();
+        const cleanedName = beforeEmail
+            .replace(/^\d+\s+/, '')
+            .replace(/\b\d{3,}\b/g, ' ')
+            .replace(/\b[A-Z0-9]{6,}\b/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (!cleanedName) continue;
+
+        const enrollmentMatch = row.match(/\b[A-Za-z]{0,3}\d{4,}[A-Za-z0-9]*\b/);
+
+        parsed.push({
+            fullName: cleanedName,
+            email,
+            phone,
+            enrollmentNo: enrollmentMatch ? String(enrollmentMatch[0]).trim() : null,
+        });
+    }
+
+    const deduped = [];
+    const seen = new Set();
+    for (const row of parsed) {
+        const key = row.email;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(row);
+    }
+
+    if (!deduped.length) {
+        throw new AppError('Unable to extract participant rows from PDF. Please verify format or use CSV/Excel.', 400, 'PDF_PARSE_FAILED');
+    }
+
+    return deduped;
+}
+
 // ── GET / — List all events ─────────────────────────────────
 router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
@@ -335,6 +456,46 @@ router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARD
         }));
 
         res.json({ success: true, data: { events: enriched } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── POST /participants/parse-pdf — Extract participant rows from PDF ──────
+router.post('/participants/parse-pdf', authenticate, requireRole('HOD', 'SUPER_ADMIN'), upload.single('file'), async (req, res, next) => {
+    try {
+        if (!req.file) throw new AppError('PDF file is required', 400, 'PDF_REQUIRED');
+
+        const extension = String(req.file.originalname || '').split('.').pop()?.toLowerCase();
+        const mime = String(req.file.mimetype || '').toLowerCase();
+
+        if (extension !== 'pdf' && !mime.includes('pdf')) {
+            throw new AppError('Only PDF files are supported on this endpoint', 400, 'INVALID_FILE_TYPE');
+        }
+
+        let PDFParse;
+        try {
+            ({ PDFParse } = require('pdf-parse'));
+        } catch (err) {
+            throw new AppError('PDF import is temporarily unavailable. Please use CSV/Excel.', 503, 'PDF_IMPORT_UNAVAILABLE');
+        }
+
+        const parser = new PDFParse({ data: req.file.buffer });
+        let participants = [];
+        try {
+            const pdf = await parser.getText();
+            participants = extractParticipantsFromPdfText(pdf.text || '');
+        } finally {
+            await parser.destroy();
+        }
+
+        res.json({
+            success: true,
+            data: {
+                participants,
+                total: participants.length,
+            },
+        });
     } catch (err) {
         next(err);
     }
