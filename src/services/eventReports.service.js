@@ -195,10 +195,9 @@ async function buildEventDailyCsv({ eventId, date = new Date(), kind = 'combined
 }
 
 let cachedTransport = null;
+let cachedTransportKey = '';
 
-function resolveMailTransport() {
-    if (cachedTransport) return cachedTransport;
-
+function readSmtpConfig() {
     const host = String(process.env.SMTP_HOST || '').trim();
     const user = String(process.env.SMTP_USER || '').trim();
     const pass = String(process.env.SMTP_PASS || '').trim();
@@ -209,14 +208,54 @@ function resolveMailTransport() {
         return null;
     }
 
-    cachedTransport = nodemailer.createTransport({
+    return {
         host,
+        user,
+        pass,
         port: Number.isFinite(port) ? port : 587,
         secure,
-        auth: { user, pass },
+    };
+}
+
+function resolveMailTransport() {
+    const smtp = readSmtpConfig();
+    if (!smtp) return null;
+
+    const nextKey = JSON.stringify({
+        host: smtp.host,
+        port: smtp.port,
+        secure: smtp.secure,
+        user: smtp.user,
+        pass: smtp.pass,
     });
 
+    if (cachedTransport && cachedTransportKey === nextKey) {
+        return cachedTransport;
+    }
+
+    cachedTransport = nodemailer.createTransport({
+        host: smtp.host,
+        port: smtp.port,
+        secure: smtp.secure,
+        requireTLS: smtp.secure === false,
+        auth: { user: smtp.user, pass: smtp.pass },
+    });
+    cachedTransportKey = nextKey;
+
     return cachedTransport;
+}
+
+function resetMailTransportCache() {
+    cachedTransport = null;
+    cachedTransportKey = '';
+}
+
+function shouldRetryMailSend(err) {
+    const code = String(err?.code || '').toUpperCase();
+    const responseCode = Number(err?.responseCode || 0);
+    if (['EAUTH', 'ECONNECTION', 'ESOCKET', 'ETIMEDOUT'].includes(code)) return true;
+    if (responseCode === 421 || responseCode === 454) return true;
+    return false;
 }
 
 async function sendDailyEventReportForEvent(event, date = new Date()) {
@@ -244,8 +283,7 @@ async function sendDailyEventReportForEvent(event, date = new Date()) {
     }
 
     const report = await buildEventDailyCsv({ eventId: event.id, date, kind: 'combined' });
-
-    await transporter.sendMail({
+    const mailPayload = {
         from: fromAddress,
         to: recipients.join(','),
         subject: `[SMART-ID] ${event.name} Daily Event Report (${report.summary.day})`,
@@ -257,6 +295,35 @@ async function sendDailyEventReportForEvent(event, date = new Date()) {
                 contentType: 'text/csv',
             },
         ],
+    };
+
+    let sendInfo;
+    try {
+        sendInfo = await transporter.sendMail(mailPayload);
+    } catch (err) {
+        if (!shouldRetryMailSend(err)) throw err;
+
+        logger.warn('[EVENT-REPORT] Mail send failed, retrying with fresh SMTP transport', {
+            eventId: event.id,
+            error: err.message,
+            code: err.code,
+            responseCode: err.responseCode,
+        });
+
+        resetMailTransportCache();
+        const retryTransporter = resolveMailTransport();
+        if (!retryTransporter) {
+            throw err;
+        }
+        sendInfo = await retryTransporter.sendMail(mailPayload);
+    }
+
+    logger.info('[EVENT-REPORT] Mail sent', {
+        eventId: event.id,
+        from: fromAddress,
+        recipients: recipients.length,
+        accepted: Array.isArray(sendInfo?.accepted) ? sendInfo.accepted.length : 0,
+        messageId: sendInfo?.messageId,
     });
 
     return {
