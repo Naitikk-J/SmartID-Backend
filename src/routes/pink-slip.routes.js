@@ -12,9 +12,19 @@ const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 const OBJECT_ID_REGEX = /^[a-f\d]{24}$/i;
+const TICKET_CODE_REGEX = /^\d{4}$/;
 
 function toTicketId(id) {
-    return `PS-${String(id || '').toUpperCase()}`;
+    const source = String(id || '').trim().toUpperCase();
+    if (!source) return 'PS-0000';
+
+    // Deterministic 4-digit code derived from the pink slip id.
+    let hash = 0;
+    for (let i = 0; i < source.length; i += 1) {
+        hash = (hash * 31 + source.charCodeAt(i)) % 10000;
+    }
+
+    return `PS-${String(hash).padStart(4, '0')}`;
 }
 
 function mapPinkSlipResponse(item) {
@@ -28,7 +38,7 @@ function mapPinkSlipResponse(item) {
 function normalizeTicketInput(value) {
     const raw = String(value || '').trim();
     if (!raw) return null;
-    return raw.replace(/^PS-/i, '').toLowerCase();
+    return raw.replace(/^PS-/i, '').trim();
 }
 
 // Validation schemas
@@ -145,35 +155,57 @@ router.get('/', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), async
 router.get('/ticket/:ticketId', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'FACULTY', 'SECURITY_GUARD'), async (req, res, next) => {
     try {
         const normalized = normalizeTicketInput(req.params.ticketId);
-        if (!normalized || !OBJECT_ID_REGEX.test(normalized)) {
+        if (!normalized) {
             throw new AppError('Invalid ticket id format', 400, 'INVALID_TICKET_ID');
         }
 
-        const pinkSlip = await prisma.pinkSlip.findUnique({
-            where: { id: normalized },
-            include: {
-                student: {
-                    select: {
-                        id: true,
-                        fullName: true,
-                        enrollmentNo: true,
-                        department: true,
-                        studentType: true,
-                        phone: true,
-                        email: true,
-                        roomNo: true,
-                    },
-                },
-                approvedBy: {
-                    select: {
-                        id: true,
-                        name: true,
-                        email: true,
-                        role: true,
-                    },
+        const includePayload = {
+            student: {
+                select: {
+                    id: true,
+                    fullName: true,
+                    enrollmentNo: true,
+                    department: true,
+                    studentType: true,
+                    phone: true,
+                    email: true,
+                    roomNo: true,
                 },
             },
-        });
+            approvedBy: {
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    role: true,
+                },
+            },
+        };
+
+        let pinkSlip = null;
+
+        // Backward compatibility: still allow lookup by full object id ticket.
+        if (OBJECT_ID_REGEX.test(normalized)) {
+            pinkSlip = await prisma.pinkSlip.findUnique({
+                where: { id: normalized.toLowerCase() },
+                include: includePayload,
+            });
+        } else if (TICKET_CODE_REGEX.test(normalized)) {
+            const ticketCode = `PS-${normalized}`;
+            const candidates = await prisma.pinkSlip.findMany({
+                include: includePayload,
+                orderBy: { createdAt: 'desc' },
+                take: 5000,
+            });
+
+            const matches = candidates.filter((item) => toTicketId(item.id) === ticketCode);
+            if (matches.length > 1) {
+                throw new AppError('Ticket id is ambiguous. Please ask student for latest request date/time.', 409, 'AMBIGUOUS_TICKET_ID');
+            }
+            pinkSlip = matches[0] || null;
+        } else {
+            throw new AppError('Invalid ticket id format', 400, 'INVALID_TICKET_ID');
+        }
 
         if (!pinkSlip) {
             throw new AppError('Pink slip ticket not found', 404, 'PINK_SLIP_NOT_FOUND');
