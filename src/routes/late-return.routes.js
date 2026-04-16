@@ -11,8 +11,8 @@ const router = express.Router();
 const createLateReturnSchema = z.object({
     eta: z.string().transform((value) => new Date(value)),
     reason: z.string().trim().min(5).max(240),
-    latitude: z.number().optional(),
-    longitude: z.number().optional(),
+    latitude: z.coerce.number().min(-90).max(90),
+    longitude: z.coerce.number().min(-180).max(180),
 });
 
 const resolveLateReturnSchema = z.object({
@@ -27,6 +27,10 @@ router.post('/request', authenticate, requireRole('STUDENT'), validate(createLat
 
         if (Number.isNaN(eta.getTime())) {
             throw new AppError('Invalid ETA', 400, 'INVALID_ETA');
+        }
+
+        if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) {
+            throw new AppError('Location is required', 400, 'LOCATION_REQUIRED');
         }
 
         const request = await prisma.lateReturnRequest.create({
