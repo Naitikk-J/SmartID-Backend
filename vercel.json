@@ -23,5 +23,11 @@
     "env": {
         "NODE_ENV": "production",
         "DASHBOARD_URL": "http://localhost:5173,https://smart-id-frontend-seven.vercel.app"
-    }
+    },
+    "crons": [
+        {
+            "path": "/api/v1/events/reports/cron/send-daily",
+            "schedule": "30 14 * * *"
+        }
+    ]
 }

@@ -114,6 +114,16 @@ const updateParticipantMealsSchema = z.object({
     message: 'At least one meal field is required',
 });
 
+function isAuthorizedCronRequest(req) {
+    const secret = String(process.env.CRON_SECRET || '').trim();
+    if (!secret) {
+        return false;
+    }
+
+    const auth = String(req.headers.authorization || '').trim();
+    return auth === `Bearer ${secret}`;
+}
+
 const eventScanSchema = z.object({
     qr_token: z.string().optional(),
     qrToken: z.string().optional(),
@@ -1342,6 +1352,28 @@ router.post('/:id/reports/send-daily', authenticate, requireRole('HOD', 'SUPER_A
         const outcome = await sendDailyEventReportForEvent(event, date);
 
         res.json({ success: true, data: { outcome } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /reports/cron/send-daily — Vercel cron trigger for all active events ──
+router.get('/reports/cron/send-daily', async (req, res, next) => {
+    try {
+        if (!isAuthorizedCronRequest(req)) {
+            throw new AppError('Unauthorized cron trigger', 401, 'UNAUTHORIZED_CRON');
+        }
+
+        const date = req.query?.date ? new Date(String(req.query.date)) : new Date();
+        const outcomes = await sendDailyEventReports(date);
+
+        res.json({
+            success: true,
+            data: {
+                total: outcomes.length,
+                outcomes,
+            },
+        });
     } catch (err) {
         next(err);
     }

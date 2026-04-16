@@ -54,6 +54,9 @@ const envSchema = z.object({
     SMTP_FROM: z.string().optional(),
     SMTP_SECURE: z.string().optional(),
 
+    // Cron auth token (used by serverless scheduled triggers)
+    CRON_SECRET: z.string().optional(),
+
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),
 });
