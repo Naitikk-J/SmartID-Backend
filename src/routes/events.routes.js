@@ -1324,221 +1324,277 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
 
         try {
 
-        if (payload.tokenType === 'STAY') {
-            if (!event.isStayHostel) {
-                return res.status(400).json({
-                    success: false,
+            if (payload.tokenType === 'STAY') {
+                if (!event.isStayHostel) {
+                    return res.status(400).json({
+                        success: false,
+                        data: {
+                            result: 'STAY_DISABLED',
+                            badge: 'RED',
+                            message: 'Stay-hostel scanning is disabled for this event.',
+                        },
+                    });
+                }
+
+                const previous = await prisma.eventStayScan.findFirst({
+                    where: {
+                        eventId: event.id,
+                        OR: [
+                            { participantId: participant.id },
+                            { studentId: req.user.id },
+                        ],
+                    },
+                    orderBy: { scannedAt: 'desc' },
+                });
+
+                const stayCooldownRemainingSeconds = computeCooldownRemainingSeconds(previous?.scannedAt, serverNow);
+                if (stayCooldownRemainingSeconds > 0) {
+                    await createEventStudentAuthLogSafe({
+                        studentId: req.user.id,
+                        studentEmail: req.user.email,
+                        enrollmentNo: participant.enrollmentNo || null,
+                        action: 'EVENT_SCAN_COOLDOWN',
+                        status: 'FAILED',
+                        reason: 'STAY',
+                        metadata: {
+                            eventId: event.id,
+                            eventName: event.name,
+                            cooldownSecondsRemaining: stayCooldownRemainingSeconds,
+                            cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                        },
+                    });
+
+                    return res.status(429).json({
+                        success: false,
+                        data: {
+                            result: 'SCAN_COOLDOWN_ACTIVE',
+                            badge: 'AMBER',
+                            message: `Cooldown active. Retry in ${stayCooldownRemainingSeconds}s.`,
+                            cooldownSecondsRemaining: stayCooldownRemainingSeconds,
+                            cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                            eventName: event.name,
+                        },
+                    });
+                }
+
+                const direction = nextDirectionalState(previous?.direction || null);
+                const scan = await prisma.eventStayScan.create({
                     data: {
-                        result: 'STAY_DISABLED',
-                        badge: 'RED',
-                        message: 'Stay-hostel scanning is disabled for this event.',
+                        eventId: event.id,
+                        participantId: participant.id,
+                        studentId: req.user.id,
+                        direction,
+                        scanMode: 'DYNAMIC_QR',
+                        gateLabel: event.hostelGateLabel || 'Event Hostel Gate',
+                        result: 'VERIFIED',
+                        scannedAt,
+                        metadata: {
+                            latitude: Number.isFinite(latitude) ? latitude : null,
+                            longitude: Number.isFinite(longitude) ? longitude : null,
+                            accuracy: Number.isFinite(accuracy) ? accuracy : null,
+                            actorEmail: req.user.email,
+                        },
+                    },
+                });
+
+                return res.json({
+                    success: true,
+                    data: {
+                        result: 'VERIFIED',
+                        badge: 'GREEN',
+                        message: `${event.name}: ${direction} logged successfully.`,
+                        eventName: event.name,
+                        eventType: direction,
+                        scanEventId: scan.id,
                     },
                 });
             }
 
-            const previous = await prisma.eventStayScan.findFirst({
-                where: {
+            if (payload.tokenType === 'MESS') {
+                const participantMaxMeals = Number.isInteger(participant.maxMealsAllowed) && participant.maxMealsAllowed > 0
+                    ? participant.maxMealsAllowed
+                    : null;
+                const eventMaxMeals = Number.isInteger(event.maxMealsPerParticipant) && event.maxMealsPerParticipant > 0
+                    ? event.maxMealsPerParticipant
+                    : null;
+                const effectiveMaxMeals = participantMaxMeals ?? eventMaxMeals;
+
+                const dayWiseMealLimits = normalizeDayWiseMealLimits(event.dayWiseMealLimits);
+                const hasDayWiseConfig = dayWiseMealLimits.length > 0;
+                const timezone = event.timezone || 'Asia/Kolkata';
+                const { dayNumber, dayKey } = computeEventDayNumber(event.eventDate, scannedAt, timezone);
+                const identityWhere = {
                     eventId: event.id,
                     OR: [
                         { participantId: participant.id },
                         { studentId: req.user.id },
                     ],
-                },
-                orderBy: { scannedAt: 'desc' },
-            });
+                };
+                const dayWindow = buildLooseTimezoneWindow(dayKey);
 
-            const stayCooldownRemainingSeconds = computeCooldownRemainingSeconds(previous?.scannedAt, serverNow);
-            if (stayCooldownRemainingSeconds > 0) {
-                await createEventStudentAuthLogSafe({
-                    studentId: req.user.id,
-                    studentEmail: req.user.email,
-                    enrollmentNo: participant.enrollmentNo || null,
-                    action: 'EVENT_SCAN_COOLDOWN',
-                    status: 'FAILED',
-                    reason: 'STAY',
-                    metadata: {
-                        eventId: event.id,
-                        eventName: event.name,
-                        cooldownSecondsRemaining: stayCooldownRemainingSeconds,
-                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
-                    },
-                });
-
-                return res.status(429).json({
-                    success: false,
-                    data: {
-                        result: 'SCAN_COOLDOWN_ACTIVE',
-                        badge: 'AMBER',
-                        message: `Cooldown active. Retry in ${stayCooldownRemainingSeconds}s.`,
-                        cooldownSecondsRemaining: stayCooldownRemainingSeconds,
-                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
-                        eventName: event.name,
-                    },
-                });
-            }
-
-            const direction = nextDirectionalState(previous?.direction || null);
-            const scan = await prisma.eventStayScan.create({
-                data: {
-                    eventId: event.id,
-                    participantId: participant.id,
-                    studentId: req.user.id,
-                    direction,
-                    scanMode: 'DYNAMIC_QR',
-                    gateLabel: event.hostelGateLabel || 'Event Hostel Gate',
-                    result: 'VERIFIED',
-                    scannedAt,
-                    metadata: {
-                        latitude: Number.isFinite(latitude) ? latitude : null,
-                        longitude: Number.isFinite(longitude) ? longitude : null,
-                        accuracy: Number.isFinite(accuracy) ? accuracy : null,
-                        actorEmail: req.user.email,
-                    },
-                },
-            });
-
-            return res.json({
-                success: true,
-                data: {
-                    result: 'VERIFIED',
-                    badge: 'GREEN',
-                    message: `${event.name}: ${direction} logged successfully.`,
-                    eventName: event.name,
-                    eventType: direction,
-                    scanEventId: scan.id,
-                },
-            });
-        }
-
-        if (payload.tokenType === 'MESS') {
-            const participantMaxMeals = Number.isInteger(participant.maxMealsAllowed) && participant.maxMealsAllowed > 0
-                ? participant.maxMealsAllowed
-                : null;
-            const eventMaxMeals = Number.isInteger(event.maxMealsPerParticipant) && event.maxMealsPerParticipant > 0
-                ? event.maxMealsPerParticipant
-                : null;
-            const effectiveMaxMeals = participantMaxMeals ?? eventMaxMeals;
-
-            const dayWiseMealLimits = normalizeDayWiseMealLimits(event.dayWiseMealLimits);
-            const hasDayWiseConfig = dayWiseMealLimits.length > 0;
-            const timezone = event.timezone || 'Asia/Kolkata';
-            const { dayNumber, dayKey } = computeEventDayNumber(event.eventDate, scannedAt, timezone);
-            const identityWhere = {
-                eventId: event.id,
-                OR: [
-                    { participantId: participant.id },
-                    { studentId: req.user.id },
-                ],
-            };
-            const dayWindow = buildLooseTimezoneWindow(dayKey);
-
-            const [countedConsumedMeals, candidateDayScans, latestMealScan] = await Promise.all([
-                prisma.eventMealScan.count({ where: identityWhere }),
-                prisma.eventMealScan.findMany({
-                    where: {
-                        ...identityWhere,
-                        scannedAt: {
-                            gte: dayWindow.start,
-                            lte: dayWindow.end,
+                const [countedConsumedMeals, candidateDayScans, latestMealScan] = await Promise.all([
+                    prisma.eventMealScan.count({ where: identityWhere }),
+                    prisma.eventMealScan.findMany({
+                        where: {
+                            ...identityWhere,
+                            scannedAt: {
+                                gte: dayWindow.start,
+                                lte: dayWindow.end,
+                            },
                         },
-                    },
-                    select: {
-                        scannedAt: true,
-                    },
-                }),
-                prisma.eventMealScan.findFirst({
-                    where: identityWhere,
-                    orderBy: { scannedAt: 'desc' },
-                    select: {
-                        scannedAt: true,
-                    },
-                }),
-            ]);
+                        select: {
+                            scannedAt: true,
+                        },
+                    }),
+                    prisma.eventMealScan.findFirst({
+                        where: identityWhere,
+                        orderBy: { scannedAt: 'desc' },
+                        select: {
+                            scannedAt: true,
+                        },
+                    }),
+                ]);
 
-            const mealCooldownRemainingSeconds = computeCooldownRemainingSeconds(latestMealScan?.scannedAt, serverNow);
-            if (mealCooldownRemainingSeconds > 0) {
-                await createEventStudentAuthLogSafe({
-                    studentId: req.user.id,
-                    studentEmail: req.user.email,
-                    enrollmentNo: participant.enrollmentNo || null,
-                    action: 'EVENT_SCAN_COOLDOWN',
-                    status: 'FAILED',
-                    reason: 'MESS',
-                    metadata: {
-                        eventId: event.id,
-                        eventName: event.name,
-                        cooldownSecondsRemaining: mealCooldownRemainingSeconds,
-                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
-                        dayNumber,
-                        dayLabel: dayKey,
-                    },
-                });
+                const mealCooldownRemainingSeconds = computeCooldownRemainingSeconds(latestMealScan?.scannedAt, serverNow);
+                if (mealCooldownRemainingSeconds > 0) {
+                    await createEventStudentAuthLogSafe({
+                        studentId: req.user.id,
+                        studentEmail: req.user.email,
+                        enrollmentNo: participant.enrollmentNo || null,
+                        action: 'EVENT_SCAN_COOLDOWN',
+                        status: 'FAILED',
+                        reason: 'MESS',
+                        metadata: {
+                            eventId: event.id,
+                            eventName: event.name,
+                            cooldownSecondsRemaining: mealCooldownRemainingSeconds,
+                            cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                            dayNumber,
+                            dayLabel: dayKey,
+                        },
+                    });
 
-                return res.status(429).json({
-                    success: false,
-                    data: {
-                        result: 'SCAN_COOLDOWN_ACTIVE',
-                        badge: 'AMBER',
-                        message: `Cooldown active. Retry in ${mealCooldownRemainingSeconds}s.`,
-                        cooldownSecondsRemaining: mealCooldownRemainingSeconds,
-                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
-                        eventName: event.name,
-                        dayNumber,
-                        dayLabel: dayKey,
-                    },
-                });
-            }
+                    return res.status(429).json({
+                        success: false,
+                        data: {
+                            result: 'SCAN_COOLDOWN_ACTIVE',
+                            badge: 'AMBER',
+                            message: `Cooldown active. Retry in ${mealCooldownRemainingSeconds}s.`,
+                            cooldownSecondsRemaining: mealCooldownRemainingSeconds,
+                            cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                            eventName: event.name,
+                            dayNumber,
+                            dayLabel: dayKey,
+                        },
+                    });
+                }
 
-            const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
-                ? participant.mealsConsumed
-                : 0;
-            const consumedMeals = Math.max(countedConsumedMeals, explicitConsumedMeals);
+                const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
+                    ? participant.mealsConsumed
+                    : 0;
+                const consumedMeals = Math.max(countedConsumedMeals, explicitConsumedMeals);
 
-            const scansToday = candidateDayScans.reduce((total, mealScan) => {
-                if (formatDayKeyInTimezone(mealScan.scannedAt, timezone) !== dayKey) return total;
-                return total + 1;
-            }, 0);
+                const scansToday = candidateDayScans.reduce((total, mealScan) => {
+                    if (formatDayKeyInTimezone(mealScan.scannedAt, timezone) !== dayKey) return total;
+                    return total + 1;
+                }, 0);
 
-            let mealNumber = consumedMeals + 1;
-            let maxMealsAllowed = effectiveMaxMeals;
-            let remainingMeals = effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumedMeals, 0);
-            let dayCouponLimit = null;
+                let mealNumber = consumedMeals + 1;
+                let maxMealsAllowed = effectiveMaxMeals;
+                let remainingMeals = effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumedMeals, 0);
+                let dayCouponLimit = null;
 
-            if (hasDayWiseConfig) {
-                const selectedDay = dayWiseMealLimits.find((item) => item.dayNumber === dayNumber) || null;
-                dayCouponLimit = selectedDay ? selectedDay.coupons : 0;
+                if (hasDayWiseConfig) {
+                    const selectedDay = dayWiseMealLimits.find((item) => item.dayNumber === dayNumber) || null;
+                    dayCouponLimit = selectedDay ? selectedDay.coupons : 0;
 
-                const couponsBeforeDay = dayWiseMealLimits
-                    .filter((item) => item.dayNumber < dayNumber)
-                    .reduce((sum, item) => sum + item.coupons, 0);
+                    const couponsBeforeDay = dayWiseMealLimits
+                        .filter((item) => item.dayNumber < dayNumber)
+                        .reduce((sum, item) => sum + item.coupons, 0);
 
-                if (scansToday >= dayCouponLimit) {
+                    if (scansToday >= dayCouponLimit) {
+                        await createEventStudentAuthLogSafe({
+                            studentId: req.user.id,
+                            studentEmail: req.user.email,
+                            enrollmentNo: participant.enrollmentNo || null,
+                            action: 'EVENT_MEAL_OVER_ATTEMPT',
+                            status: 'FAILED',
+                            reason: 'DAY_LIMIT_REACHED',
+                            metadata: {
+                                eventId: event.id,
+                                eventName: event.name,
+                                dayNumber,
+                                dayLabel: dayKey,
+                                dayConsumed: scansToday,
+                                dayCouponLimit,
+                            },
+                        });
+
+                        return res.status(409).json({
+                            success: false,
+                            data: {
+                                result: 'MEAL_DAY_LIMIT_REACHED',
+                                badge: 'AMBER',
+                                message: `Day ${dayNumber} coupons finished (${scansToday}/${dayCouponLimit}). Previous day coupons expire at midnight.`,
+                                consumedMeals,
+                                maxMealsAllowed: dayCouponLimit,
+                                remainingMeals: 0,
+                                eventName: event.name,
+                                dayNumber,
+                                dayLabel: dayKey,
+                                dayConsumed: scansToday,
+                                dayCouponLimit,
+                            },
+                        });
+                    }
+
+                    mealNumber = couponsBeforeDay + scansToday + 1;
+                    maxMealsAllowed = dayCouponLimit;
+                    remainingMeals = Math.max(dayCouponLimit - scansToday, 0);
+                } else if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
                     await createEventStudentAuthLogSafe({
                         studentId: req.user.id,
                         studentEmail: req.user.email,
                         enrollmentNo: participant.enrollmentNo || null,
                         action: 'EVENT_MEAL_OVER_ATTEMPT',
                         status: 'FAILED',
-                        reason: 'DAY_LIMIT_REACHED',
+                        reason: 'GLOBAL_LIMIT_REACHED',
                         metadata: {
                             eventId: event.id,
                             eventName: event.name,
-                            dayNumber,
-                            dayLabel: dayKey,
-                            dayConsumed: scansToday,
-                            dayCouponLimit,
+                            consumedMeals,
+                            effectiveMaxMeals,
                         },
                     });
 
                     return res.status(409).json({
                         success: false,
                         data: {
-                            result: 'MEAL_DAY_LIMIT_REACHED',
+                            result: 'MEAL_LIMIT_REACHED',
                             badge: 'AMBER',
-                            message: `Day ${dayNumber} coupons finished (${scansToday}/${dayCouponLimit}). Previous day coupons expire at midnight.`,
+                            message: `Meal quota reached (${consumedMeals}/${effectiveMaxMeals}). Contact event admin for update.`,
                             consumedMeals,
-                            maxMealsAllowed: dayCouponLimit,
+                            maxMealsAllowed: effectiveMaxMeals,
                             remainingMeals: 0,
+                            eventName: event.name,
+                        },
+                    });
+                }
+
+                const mealLabel = `Meal ${mealNumber}`;
+
+                if (!confirmMeal) {
+                    return res.status(409).json({
+                        success: false,
+                        data: {
+                            result: 'MEAL_CONFIRMATION_REQUIRED',
+                            badge: 'AMBER',
+                            message: `Confirm meal #${mealNumber} (${mealLabel}) to continue.`,
+                            mealNumber,
+                            mealLabel,
+                            consumedMeals,
+                            maxMealsAllowed,
+                            remainingMeals,
                             eventName: event.name,
                             dayNumber,
                             dayLabel: dayKey,
@@ -1548,125 +1604,69 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     });
                 }
 
-                mealNumber = couponsBeforeDay + scansToday + 1;
-                maxMealsAllowed = dayCouponLimit;
-                remainingMeals = Math.max(dayCouponLimit - scansToday, 0);
-            } else if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
-                await createEventStudentAuthLogSafe({
-                    studentId: req.user.id,
-                    studentEmail: req.user.email,
-                    enrollmentNo: participant.enrollmentNo || null,
-                    action: 'EVENT_MEAL_OVER_ATTEMPT',
-                    status: 'FAILED',
-                    reason: 'GLOBAL_LIMIT_REACHED',
-                    metadata: {
-                        eventId: event.id,
-                        eventName: event.name,
-                        consumedMeals,
-                        effectiveMaxMeals,
-                    },
-                });
+                const nextConsumedMeals = consumedMeals + 1;
+                const nextDayConsumed = scansToday + 1;
+                const postConfirmRemaining = maxMealsAllowed == null
+                    ? null
+                    : hasDayWiseConfig
+                        ? Math.max(maxMealsAllowed - nextDayConsumed, 0)
+                        : Math.max(maxMealsAllowed - nextConsumedMeals, 0);
+                const [mealScan] = await prisma.$transaction([
+                    prisma.eventMealScan.create({
+                        data: {
+                            eventId: event.id,
+                            participantId: participant.id,
+                            studentId: req.user.id,
+                            mealRuleId: null,
+                            mealNumber,
+                            mealLabel,
+                            scannedAt,
+                            metadata: {
+                                latitude: Number.isFinite(latitude) ? latitude : null,
+                                longitude: Number.isFinite(longitude) ? longitude : null,
+                                accuracy: Number.isFinite(accuracy) ? accuracy : null,
+                                actorEmail: req.user.email,
+                                dayNumber,
+                                dayLabel: dayKey,
+                                dayCouponLimit,
+                            },
+                        },
+                    }),
+                    prisma.eventParticipant.update({
+                        where: { id: participant.id },
+                        data: { mealsConsumed: nextConsumedMeals },
+                    }),
+                ]);
 
-                return res.status(409).json({
-                    success: false,
+                return res.json({
+                    success: true,
                     data: {
-                        result: 'MEAL_LIMIT_REACHED',
-                        badge: 'AMBER',
-                        message: `Meal quota reached (${consumedMeals}/${effectiveMaxMeals}). Contact event admin for update.`,
-                        consumedMeals,
-                        maxMealsAllowed: effectiveMaxMeals,
-                        remainingMeals: 0,
-                        eventName: event.name,
-                    },
-                });
-            }
-
-            const mealLabel = `Meal ${mealNumber}`;
-
-            if (!confirmMeal) {
-                return res.status(409).json({
-                    success: false,
-                    data: {
-                        result: 'MEAL_CONFIRMATION_REQUIRED',
-                        badge: 'AMBER',
-                        message: `Confirm meal #${mealNumber} (${mealLabel}) to continue.`,
+                        result: 'MEAL_CONFIRMED',
+                        badge: 'GREEN',
+                        message: `Meal #${mealNumber} (${mealLabel}) confirmed.`,
                         mealNumber,
                         mealLabel,
-                        consumedMeals,
+                        consumedMeals: nextConsumedMeals,
                         maxMealsAllowed,
-                        remainingMeals,
+                        remainingMeals: postConfirmRemaining,
+                        scanEventId: mealScan.id,
                         eventName: event.name,
                         dayNumber,
                         dayLabel: dayKey,
-                        dayConsumed: scansToday,
+                        dayConsumed: nextDayConsumed,
                         dayCouponLimit,
                     },
                 });
             }
 
-            const nextConsumedMeals = consumedMeals + 1;
-            const nextDayConsumed = scansToday + 1;
-            const postConfirmRemaining = maxMealsAllowed == null
-                ? null
-                : hasDayWiseConfig
-                    ? Math.max(maxMealsAllowed - nextDayConsumed, 0)
-                    : Math.max(maxMealsAllowed - nextConsumedMeals, 0);
-            const [mealScan] = await prisma.$transaction([
-                prisma.eventMealScan.create({
-                    data: {
-                        eventId: event.id,
-                        participantId: participant.id,
-                        studentId: req.user.id,
-                        mealRuleId: null,
-                        mealNumber,
-                        mealLabel,
-                        scannedAt,
-                        metadata: {
-                            latitude: Number.isFinite(latitude) ? latitude : null,
-                            longitude: Number.isFinite(longitude) ? longitude : null,
-                            accuracy: Number.isFinite(accuracy) ? accuracy : null,
-                            actorEmail: req.user.email,
-                            dayNumber,
-                            dayLabel: dayKey,
-                            dayCouponLimit,
-                        },
-                    },
-                }),
-                prisma.eventParticipant.update({
-                    where: { id: participant.id },
-                    data: { mealsConsumed: nextConsumedMeals },
-                }),
-            ]);
-
-            return res.json({
-                success: true,
+            return res.status(400).json({
+                success: false,
                 data: {
-                    result: 'MEAL_CONFIRMED',
-                    badge: 'GREEN',
-                    message: `Meal #${mealNumber} (${mealLabel}) confirmed.`,
-                    mealNumber,
-                    mealLabel,
-                    consumedMeals: nextConsumedMeals,
-                    maxMealsAllowed,
-                    remainingMeals: postConfirmRemaining,
-                    scanEventId: mealScan.id,
-                    eventName: event.name,
-                    dayNumber,
-                    dayLabel: dayKey,
-                    dayConsumed: nextDayConsumed,
-                    dayCouponLimit,
+                    result: 'UNSUPPORTED_EVENT_QR',
+                    badge: 'RED',
+                    message: 'Unsupported event QR token.',
                 },
             });
-        }
-
-        return res.status(400).json({
-            success: false,
-            data: {
-                result: 'UNSUPPORTED_EVENT_QR',
-                badge: 'RED',
-                message: 'Unsupported event QR token.',
-            },
-        });
         } finally {
             releaseScanLock(lockKey);
         }
