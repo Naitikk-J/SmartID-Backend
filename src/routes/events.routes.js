@@ -315,13 +315,10 @@ async function importParticipantsForEvent(event, participants) {
 }
 
 async function replaceMessRulesForEvent(event, rules) {
+    const sharedQrToken = await ensureMessSharedQrToken(event);
+
     await prisma.eventMessRule.deleteMany({ where: { eventId: event.id } });
     const created = [];
-
-    const sharedQr = createEventMessQrToken({
-        eventId: event.id,
-        eventEndsAt: new Date(event.endTime),
-    });
 
     for (const rule of rules) {
         const saved = await prisma.eventMessRule.create({
@@ -332,7 +329,7 @@ async function replaceMessRulesForEvent(event, rules) {
                 startTime: rule.startTime,
                 endTime: rule.endTime,
                 isActive: rule.isActive !== false,
-                qrToken: sharedQr.token,
+                qrToken: sharedQrToken,
             },
         });
 
@@ -340,6 +337,27 @@ async function replaceMessRulesForEvent(event, rules) {
     }
 
     return created;
+}
+
+async function ensureMessSharedQrToken(event) {
+    const existingToken = String(event?.messSharedQrToken || '').trim();
+    if (existingToken) {
+        return existingToken;
+    }
+
+    const sharedQr = createEventMessQrToken({
+        eventId: event.id,
+        eventEndsAt: new Date(event.endTime),
+    });
+
+    await prisma.campusEvent.update({
+        where: { id: event.id },
+        data: {
+            messSharedQrToken: sharedQr.token,
+        },
+    });
+
+    return sharedQr.token;
 }
 
 function startAndEndOfDate(dateInput) {
@@ -400,6 +418,11 @@ function normalizeDayWiseMealLimits(rawLimits) {
     return Array.from(dayMap.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([dayNumber, coupons]) => ({ dayNumber, coupons }));
+}
+
+function sumDayWiseCoupons(dayWiseMealLimits) {
+    if (!Array.isArray(dayWiseMealLimits)) return 0;
+    return dayWiseMealLimits.reduce((sum, item) => sum + Number(item?.coupons || 0), 0);
 }
 
 function formatDayKeyInTimezone(date, timezone) {
@@ -666,6 +689,22 @@ router.get('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'W
 router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(createEventSchema), async (req, res, next) => {
     try {
         const payload = req.body;
+        const normalizedDayWiseMealLimits = normalizeDayWiseMealLimits(payload.dayWiseMealLimits);
+        const globalMealLimit = Number.isInteger(payload.maxMealsPerParticipant) && payload.maxMealsPerParticipant > 0
+            ? payload.maxMealsPerParticipant
+            : null;
+
+        if (globalMealLimit != null) {
+            const dayWiseTotal = sumDayWiseCoupons(normalizedDayWiseMealLimits);
+            if (dayWiseTotal > globalMealLimit) {
+                throw new AppError(
+                    `Day-wise coupons total (${dayWiseTotal}) cannot exceed global max meals (${globalMealLimit})`,
+                    400,
+                    'INVALID_DAY_WISE_MEAL_LIMITS',
+                );
+            }
+        }
+
         const event = await prisma.campusEvent.create({
             data: {
                 name: payload.name,
@@ -682,7 +721,7 @@ router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(creat
                 appliesTo: payload.appliesTo || ['ALL'],
                 gateIds: payload.gateIds || [],
                 maxMealsPerParticipant: payload.maxMealsPerParticipant ?? null,
-                dayWiseMealLimits: normalizeDayWiseMealLimits(payload.dayWiseMealLimits),
+                dayWiseMealLimits: normalizedDayWiseMealLimits,
                 createdById: req.user.id,
             },
         });
@@ -814,11 +853,40 @@ router.get('/:id/participants', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
 // ── PATCH /:id/meal-settings — Set global meals per participant ───────────
 router.patch('/:id/meal-settings', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateEventMealSettingsSchema), async (req, res, next) => {
     try {
+        const existingEvent = await prisma.campusEvent.findUnique({
+            where: { id: req.params.id },
+            select: {
+                id: true,
+                maxMealsPerParticipant: true,
+                dayWiseMealLimits: true,
+            },
+        });
+        if (!existingEvent) throw new AppError('Event not found', 404);
+
+        const normalizedDayWiseMealLimits = req.body.dayWiseMealLimits !== undefined
+            ? normalizeDayWiseMealLimits(req.body.dayWiseMealLimits)
+            : normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits);
+
+        const nextGlobalMealLimit = req.body.maxMealsPerParticipant !== undefined
+            ? req.body.maxMealsPerParticipant
+            : existingEvent.maxMealsPerParticipant;
+
+        if (nextGlobalMealLimit != null) {
+            const dayWiseTotal = sumDayWiseCoupons(normalizedDayWiseMealLimits);
+            if (dayWiseTotal > nextGlobalMealLimit) {
+                throw new AppError(
+                    `Day-wise coupons total (${dayWiseTotal}) cannot exceed global max meals (${nextGlobalMealLimit})`,
+                    400,
+                    'INVALID_DAY_WISE_MEAL_LIMITS',
+                );
+            }
+        }
+
         const event = await prisma.campusEvent.update({
             where: { id: req.params.id },
             data: {
                 ...(req.body.maxMealsPerParticipant !== undefined ? { maxMealsPerParticipant: req.body.maxMealsPerParticipant } : {}),
-                ...(req.body.dayWiseMealLimits !== undefined ? { dayWiseMealLimits: normalizeDayWiseMealLimits(req.body.dayWiseMealLimits) } : {}),
+                ...(req.body.dayWiseMealLimits !== undefined ? { dayWiseMealLimits: normalizedDayWiseMealLimits } : {}),
             },
             select: {
                 id: true,
@@ -940,22 +1008,19 @@ router.get('/:id/mess/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
         const event = await prisma.campusEvent.findUnique({ where: { id: req.params.id } });
         if (!event) throw new AppError('Event not found', 404);
 
+        const sharedQrToken = await ensureMessSharedQrToken(event);
+
         const rules = await prisma.eventMessRule.findMany({
             where: { eventId: event.id, isActive: true },
             orderBy: { mealNumber: 'asc' },
         });
 
-        const sharedQr = createEventMessQrToken({
-            eventId: event.id,
-            eventEndsAt: new Date(event.endTime),
-        });
-
         const hydrated = [];
         for (const rule of rules) {
-            if (rule.qrToken !== sharedQr.token) {
+            if (rule.qrToken !== sharedQrToken) {
                 const updated = await prisma.eventMessRule.update({
                     where: { id: rule.id },
-                    data: { qrToken: sharedQr.token },
+                    data: { qrToken: sharedQrToken },
                 });
                 hydrated.push(updated);
             } else {
@@ -963,7 +1028,7 @@ router.get('/:id/mess/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
             }
         }
 
-        res.json({ success: true, data: { sharedQrToken: sharedQr.token, rules: hydrated } });
+        res.json({ success: true, data: { sharedQrToken, rules: hydrated } });
     } catch (err) {
         next(err);
     }
@@ -1538,13 +1603,42 @@ router.post('/:id/report-recipients', authenticate, requireRole('HOD', 'SUPER_AD
 // ── PATCH /:id — Update event ───────────────────────────────
 router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateEventSchema), async (req, res, next) => {
     try {
+        const existingEvent = await prisma.campusEvent.findUnique({
+            where: { id: req.params.id },
+            select: {
+                id: true,
+                maxMealsPerParticipant: true,
+                dayWiseMealLimits: true,
+            },
+        });
+        if (!existingEvent) throw new AppError('Event not found', 404);
+
         const data = { ...req.body };
         if (data.eventDate) data.eventDate = new Date(data.eventDate);
         if (data.startTime) data.startTime = new Date(data.startTime);
         if (data.endTime) data.endTime = new Date(data.endTime);
 
+        const nextDayWiseMealLimits = data.dayWiseMealLimits !== undefined
+            ? normalizeDayWiseMealLimits(data.dayWiseMealLimits)
+            : normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits);
+
+        const nextGlobalMealLimit = data.maxMealsPerParticipant !== undefined
+            ? data.maxMealsPerParticipant
+            : existingEvent.maxMealsPerParticipant;
+
+        if (nextGlobalMealLimit != null) {
+            const dayWiseTotal = sumDayWiseCoupons(nextDayWiseMealLimits);
+            if (dayWiseTotal > nextGlobalMealLimit) {
+                throw new AppError(
+                    `Day-wise coupons total (${dayWiseTotal}) cannot exceed global max meals (${nextGlobalMealLimit})`,
+                    400,
+                    'INVALID_DAY_WISE_MEAL_LIMITS',
+                );
+            }
+        }
+
         if (data.dayWiseMealLimits !== undefined) {
-            data.dayWiseMealLimits = normalizeDayWiseMealLimits(data.dayWiseMealLimits);
+            data.dayWiseMealLimits = nextDayWiseMealLimits;
         }
 
         const messRules = Array.isArray(data.messRules) ? data.messRules : null;

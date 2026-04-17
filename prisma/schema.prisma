@@ -292,6 +292,7 @@ model CampusEvent {
   importedCount Int      @default(0)
   maxMealsPerParticipant Int?
   dayWiseMealLimits Json?
+  messSharedQrToken String?
   eventDate   DateTime
   startTime   DateTime
   endTime     DateTime
