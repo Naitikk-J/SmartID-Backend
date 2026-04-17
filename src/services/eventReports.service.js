@@ -3,6 +3,8 @@ const ExcelJS = require('exceljs');
 const prisma = require('../config/database');
 const logger = require('../config/logger');
 
+const SUSPICIOUS_MOVEMENT_THRESHOLD = 8;
+
 function startOfLocalDay(date) {
     const d = new Date(date || new Date());
     d.setHours(0, 0, 0, 0);
@@ -159,6 +161,111 @@ function getDirectionLabel(direction) {
     if (normalized === 'ENTRY') return 'ENTRY';
     if (normalized === 'EXIT') return 'EXIT';
     return normalized || '';
+}
+
+function buildParticipantActivityKeySet(stayLogs, mealLogs) {
+    const set = new Set();
+
+    const addProfileKeys = (profile) => {
+        if (!profile) return;
+        const key = resolveIdentityKey({
+            participantId: profile.participantId,
+            studentId: profile.studentId,
+            email: profile.email,
+            enrollmentNo: profile.enrollmentNo,
+            fallbackName: profile.fullName,
+        });
+        set.add(key);
+    };
+
+    for (const log of [...stayLogs, ...mealLogs]) {
+        const profile = getProfileFromEventLog(log);
+        addProfileKeys(profile);
+    }
+
+    return set;
+}
+
+function buildAbsentRows(participants, activityKeySet) {
+    const rows = [];
+
+    for (const participant of participants) {
+        if (participant.isActive === false) continue;
+
+        const key = resolveIdentityKey({
+            participantId: participant.id,
+            studentId: participant.studentId || participant.student?.id || null,
+            email: participant.email || participant.student?.email || null,
+            enrollmentNo: participant.enrollmentNo || participant.student?.enrollmentNo || null,
+            fallbackName: participant.fullName || participant.student?.fullName,
+        });
+
+        if (activityKeySet.has(key)) continue;
+
+        rows.push({
+            name: participant.fullName || participant.student?.fullName || '',
+            enrollmentNo: participant.enrollmentNo || participant.student?.enrollmentNo || '',
+            email: participant.email || participant.student?.email || '',
+            phone: participant.phone || participant.student?.phone || '',
+            studentType: participant.student?.studentType || '',
+            hasAnyScanToday: 'NO',
+            notes: 'No event stay/meal scan found for report day',
+        });
+    }
+
+    return rows.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+function buildAnomalyRows({ authLogs, participantRows, eventId, timezone }) {
+    const anomalies = [];
+
+    for (const log of authLogs) {
+        const metadata = log.metadata && typeof log.metadata === 'object' ? log.metadata : {};
+        const isEventSpecific = String(metadata.eventId || '') === String(eventId);
+        const name = log.student?.fullName || '';
+        const enrollmentNo = log.enrollmentNo || log.student?.enrollmentNo || '';
+        const email = log.studentEmail || log.student?.email || '';
+        const timestamp = formatTimestampInTimezone(log.createdAt, timezone);
+
+        if (String(log.action || '').toUpperCase() === 'EVENT_MEAL_OVER_ATTEMPT' && isEventSpecific) {
+            anomalies.push({
+                category: 'MEAL_OVER_ATTEMPT',
+                severity: 'HIGH',
+                timestamp,
+                name,
+                enrollmentNo,
+                email,
+                details: stringifyMetadata(metadata),
+            });
+        }
+
+        if (getAuthStatusLabel(log.status) !== 'SUCCESS') {
+            anomalies.push({
+                category: 'AUTH_FAILURE',
+                severity: 'MEDIUM',
+                timestamp,
+                name,
+                enrollmentNo,
+                email,
+                details: `action=${log.action || ''}; reason=${log.reason || ''}`,
+            });
+        }
+    }
+
+    for (const row of participantRows) {
+        if ((row.eventMovements || 0) < SUSPICIOUS_MOVEMENT_THRESHOLD) continue;
+        anomalies.push({
+            category: 'FREQUENT_ENTRY_EXIT',
+            severity: 'MEDIUM',
+            timestamp: '',
+            name: row.name,
+            enrollmentNo: row.enrollmentNo,
+            email: row.email,
+            details: `eventMovements=${row.eventMovements}; entries=${row.eventEntries}; exits=${row.eventExits}`,
+        });
+    }
+
+    return anomalies;
 }
 
 function csvEscape(value) {
@@ -730,6 +837,15 @@ async function buildEventDailyWorkbook({ eventId, date = new Date() }) {
         participantRows,
     });
 
+    const participantActivityKeySet = buildParticipantActivityKeySet(stayLogs, mealLogs);
+    const absentRows = buildAbsentRows(participants, participantActivityKeySet);
+    const anomalyRows = buildAnomalyRows({
+        authLogs,
+        participantRows,
+        eventId: event.id,
+        timezone,
+    });
+
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'SMART-ID Backend';
     workbook.lastModifiedBy = 'SMART-ID Backend';
@@ -761,6 +877,8 @@ async function buildEventDailyWorkbook({ eventId, date = new Date() }) {
         { metric: 'Auth Failures', value: summary.authFailures },
         { metric: 'Hostel Gate Entries', value: summary.hostelEntries },
         { metric: 'Hostel Gate Exits', value: summary.hostelExits },
+        { metric: 'Anomaly Count', value: anomalyRows.length },
+        { metric: 'Absent Participants', value: absentRows.length },
         { metric: 'Event Day Number', value: summary.eventDayNumber },
         { metric: 'Day-wise Coupon Limit', value: summary.dayWiseCouponLimit == null ? 'N/A' : String(summary.dayWiseCouponLimit) },
         { metric: 'Peak Movement Student', value: summary.peakMovementStudent || 'N/A' },
@@ -921,6 +1039,36 @@ async function buildEventDailyWorkbook({ eventId, date = new Date() }) {
             email: log.student?.email || '',
             studentType: log.student?.studentType || '',
         })),
+    );
+
+    addWorksheetWithColumns(
+        workbook,
+        'Anomalies',
+        [
+            { header: 'Category', key: 'category', width: 24 },
+            { header: 'Severity', key: 'severity', width: 12 },
+            { header: 'Timestamp', key: 'timestamp', width: 22 },
+            { header: 'Name', key: 'name', width: 24 },
+            { header: 'Enrollment No', key: 'enrollmentNo', width: 18 },
+            { header: 'Email', key: 'email', width: 28 },
+            { header: 'Details', key: 'details', width: 72 },
+        ],
+        anomalyRows,
+    );
+
+    addWorksheetWithColumns(
+        workbook,
+        'Absent List',
+        [
+            { header: 'Name', key: 'name', width: 24 },
+            { header: 'Enrollment No', key: 'enrollmentNo', width: 18 },
+            { header: 'Email', key: 'email', width: 28 },
+            { header: 'Phone', key: 'phone', width: 15 },
+            { header: 'Student Type', key: 'studentType', width: 16 },
+            { header: 'Has Any Scan Today', key: 'hasAnyScanToday', width: 18 },
+            { header: 'Notes', key: 'notes', width: 40 },
+        ],
+        absentRows,
     );
 
     const reportBuffer = await workbook.xlsx.writeBuffer();

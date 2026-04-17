@@ -26,6 +26,9 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']);
+const SCAN_IDEMPOTENCY_WINDOW_MS = 5 * 1000;
+const SCAN_COOLDOWN_WINDOW_MS = 20 * 1000;
+const activeScanIdempotencyLocks = new Map();
 
 const nullableIntField = (min, max) => z.preprocess((value) => {
     if (value === null || value === undefined || value === '') return value;
@@ -132,6 +135,65 @@ function isAuthorizedCronRequest(req) {
 
     const auth = String(req.headers.authorization || '').trim();
     return auth === `Bearer ${secret}`;
+}
+
+function buildScanLockKey({ eventId, participantId, studentId, tokenType }) {
+    return [String(eventId || ''), String(participantId || ''), String(studentId || ''), String(tokenType || '')].join(':');
+}
+
+function tryAcquireScanLock(lockKey) {
+    const now = Date.now();
+    const lock = activeScanIdempotencyLocks.get(lockKey);
+    if (lock && lock.expiresAt > now) {
+        return {
+            acquired: false,
+            retryAfterMs: Math.max(lock.expiresAt - now, 0),
+        };
+    }
+
+    activeScanIdempotencyLocks.set(lockKey, { expiresAt: now + SCAN_IDEMPOTENCY_WINDOW_MS });
+    return {
+        acquired: true,
+        retryAfterMs: 0,
+    };
+}
+
+function releaseScanLock(lockKey) {
+    activeScanIdempotencyLocks.delete(lockKey);
+}
+
+function computeCooldownRemainingSeconds(previousTime, currentTime = new Date()) {
+    if (!(previousTime instanceof Date) || Number.isNaN(previousTime.getTime())) return 0;
+    const nowMs = currentTime instanceof Date ? currentTime.getTime() : Date.now();
+    const elapsedMs = Math.max(nowMs - previousTime.getTime(), 0);
+    const remainingMs = Math.max(SCAN_COOLDOWN_WINDOW_MS - elapsedMs, 0);
+    return Math.ceil(remainingMs / 1000);
+}
+
+async function createEventStudentAuthLogSafe({
+    studentId,
+    studentEmail,
+    enrollmentNo,
+    action,
+    status = 'FAILED',
+    reason,
+    metadata,
+}) {
+    try {
+        await prisma.studentAuthLog.create({
+            data: {
+                studentId: studentId || null,
+                studentEmail: studentEmail || null,
+                enrollmentNo: enrollmentNo || null,
+                action,
+                status,
+                reason: reason || null,
+                metadata: metadata || null,
+            },
+        });
+    } catch {
+        // Ignore auth log failures to keep scan flow stable.
+    }
 }
 
 const eventScanSchema = z.object({
@@ -425,6 +487,23 @@ function sumDayWiseCoupons(dayWiseMealLimits) {
     return dayWiseMealLimits.reduce((sum, item) => sum + Number(item?.coupons || 0), 0);
 }
 
+function splitGlobalAcrossDays(globalLimit, days) {
+    const safeGlobal = Math.max(0, Math.trunc(Number(globalLimit) || 0));
+    const safeDays = Math.max(1, Math.min(90, Math.trunc(Number(days) || 1)));
+
+    const base = Math.floor(safeGlobal / safeDays);
+    let remainder = safeGlobal % safeDays;
+
+    return Array.from({ length: safeDays }, (_, index) => {
+        const coupons = base + (remainder > 0 ? 1 : 0);
+        if (remainder > 0) remainder -= 1;
+        return {
+            dayNumber: index + 1,
+            coupons,
+        };
+    });
+}
+
 function formatDayKeyInTimezone(date, timezone) {
     const target = date instanceof Date ? date : new Date(date);
     const tz = timezone || 'Asia/Kolkata';
@@ -471,6 +550,18 @@ function computeEventDayNumber(eventStart, scanMoment, timezone) {
         dayNumber: Math.max(diffDays + 1, 1),
         dayKey: scanDayKey,
     };
+}
+
+function resolveEventDurationDays(eventStart, eventEnd, timezone) {
+    const start = eventStart instanceof Date ? eventStart : new Date(eventStart);
+    const end = eventEnd instanceof Date ? eventEnd : new Date(eventEnd);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return 1;
+    }
+
+    const computed = computeEventDayNumber(start, end, timezone);
+    return Math.max(1, Math.min(90, Number(computed?.dayNumber || 1)));
 }
 
 function sanitizePhone(value) {
@@ -699,10 +790,19 @@ router.get('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'W
 router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(createEventSchema), async (req, res, next) => {
     try {
         const payload = req.body;
-        const normalizedDayWiseMealLimits = normalizeDayWiseMealLimits(payload.dayWiseMealLimits);
+        const timezone = payload.timezone || 'Asia/Kolkata';
+        const eventDate = new Date(payload.eventDate);
+        const endTime = new Date(payload.endTime);
+
+        let normalizedDayWiseMealLimits = normalizeDayWiseMealLimits(payload.dayWiseMealLimits);
         const globalMealLimit = Number.isInteger(payload.maxMealsPerParticipant) && payload.maxMealsPerParticipant > 0
             ? payload.maxMealsPerParticipant
             : null;
+
+        if (globalMealLimit != null && normalizedDayWiseMealLimits.length === 0) {
+            const durationDays = resolveEventDurationDays(eventDate, endTime, timezone);
+            normalizedDayWiseMealLimits = splitGlobalAcrossDays(globalMealLimit, durationDays);
+        }
 
         if (globalMealLimit != null) {
             const dayWiseTotal = sumDayWiseCoupons(normalizedDayWiseMealLimits);
@@ -721,11 +821,11 @@ router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(creat
                 description: payload.description || null,
                 isStayHostel: Boolean(payload.isStayHostel),
                 hostelGateLabel: payload.hostelGateLabel || null,
-                timezone: payload.timezone || 'Asia/Kolkata',
+                timezone,
                 reportRecipients: payload.reportRecipients || [],
-                eventDate: new Date(payload.eventDate),
+                eventDate,
                 startTime: new Date(payload.startTime),
-                endTime: new Date(payload.endTime),
+                endTime,
                 exitMode: payload.exitMode,
                 customMax: payload.customMax ?? null,
                 appliesTo: payload.appliesTo || ['ALL'],
@@ -867,19 +967,28 @@ router.patch('/:id/meal-settings', authenticate, requireRole('HOD', 'SUPER_ADMIN
             where: { id: req.params.id },
             select: {
                 id: true,
+                name: true,
+                eventDate: true,
+                endTime: true,
+                timezone: true,
                 maxMealsPerParticipant: true,
                 dayWiseMealLimits: true,
             },
         });
         if (!existingEvent) throw new AppError('Event not found', 404);
 
-        const normalizedDayWiseMealLimits = req.body.dayWiseMealLimits !== undefined
+        let normalizedDayWiseMealLimits = req.body.dayWiseMealLimits !== undefined
             ? normalizeDayWiseMealLimits(req.body.dayWiseMealLimits)
             : normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits);
 
         const nextGlobalMealLimit = req.body.maxMealsPerParticipant !== undefined
             ? req.body.maxMealsPerParticipant
             : existingEvent.maxMealsPerParticipant;
+
+        if (req.body.dayWiseMealLimits === undefined && req.body.maxMealsPerParticipant !== undefined && nextGlobalMealLimit != null) {
+            const durationDays = resolveEventDurationDays(existingEvent.eventDate, existingEvent.endTime, existingEvent.timezone || 'Asia/Kolkata');
+            normalizedDayWiseMealLimits = splitGlobalAcrossDays(nextGlobalMealLimit, durationDays);
+        }
 
         if (nextGlobalMealLimit != null) {
             const dayWiseTotal = sumDayWiseCoupons(normalizedDayWiseMealLimits);
@@ -907,6 +1016,22 @@ router.patch('/:id/meal-settings', authenticate, requireRole('HOD', 'SUPER_ADMIN
         });
 
         res.json({ success: true, data: { event } });
+
+        await logAction(req, {
+            action: 'UPDATE_EVENT_MEAL_SETTINGS',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            oldValue: {
+                name: existingEvent.name,
+                maxMealsPerParticipant: existingEvent.maxMealsPerParticipant,
+                dayWiseMealLimits: normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits),
+            },
+            newValue: {
+                name: event.name,
+                maxMealsPerParticipant: event.maxMealsPerParticipant,
+                dayWiseMealLimits: normalizeDayWiseMealLimits(event.dayWiseMealLimits),
+            },
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -1050,8 +1175,38 @@ router.put('/:id/mess/rules', authenticate, requireRole('HOD', 'SUPER_ADMIN'), v
         const event = await prisma.campusEvent.findUnique({ where: { id: req.params.id } });
         if (!event) throw new AppError('Event not found', 404);
 
+        const previousRules = await prisma.eventMessRule.findMany({
+            where: { eventId: event.id },
+            orderBy: { mealNumber: 'asc' },
+            select: {
+                mealNumber: true,
+                mealLabel: true,
+                startTime: true,
+                endTime: true,
+                isActive: true,
+            },
+        });
+
         const rules = await replaceMessRulesForEvent(event, req.body.rules || []);
         res.json({ success: true, data: { rules } });
+
+        await logAction(req, {
+            action: 'UPDATE_EVENT_MESS_RULES',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            oldValue: {
+                rules: previousRules,
+            },
+            newValue: {
+                rules: rules.map((rule) => ({
+                    mealNumber: rule.mealNumber,
+                    mealLabel: rule.mealLabel,
+                    startTime: rule.startTime,
+                    endTime: rule.endTime,
+                    isActive: rule.isActive,
+                })),
+            },
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -1075,7 +1230,8 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
     try {
         const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
         const confirmMeal = Boolean(req.body.confirm_meal);
-        const scannedAt = req.body.timestamp ? new Date(req.body.timestamp) : new Date();
+        const serverNow = new Date();
+        const scannedAt = req.body.timestamp ? new Date(req.body.timestamp) : serverNow;
         const latitude = Number(req.body.latitude);
         const longitude = Number(req.body.longitude);
         const accuracy = Number(req.body.accuracy);
@@ -1130,6 +1286,44 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
             });
         }
 
+        const lockKey = buildScanLockKey({
+            eventId: event.id,
+            participantId: participant.id,
+            studentId: req.user.id,
+            tokenType: payload.tokenType,
+        });
+        const lockAttempt = tryAcquireScanLock(lockKey);
+        if (!lockAttempt.acquired) {
+            const retryAfterSeconds = Math.max(1, Math.ceil(lockAttempt.retryAfterMs / 1000));
+
+            await createEventStudentAuthLogSafe({
+                studentId: req.user.id,
+                studentEmail: req.user.email,
+                enrollmentNo: participant.enrollmentNo || null,
+                action: 'EVENT_SCAN_IDEMPOTENT_BLOCK',
+                status: 'FAILED',
+                reason: payload.tokenType || 'UNKNOWN',
+                metadata: {
+                    eventId: event.id,
+                    eventName: event.name,
+                    retryAfterSeconds,
+                },
+            });
+
+            return res.status(429).json({
+                success: false,
+                data: {
+                    result: 'SCAN_IN_PROGRESS',
+                    badge: 'AMBER',
+                    message: `Please wait ${retryAfterSeconds}s before scanning again.`,
+                    retryAfterSeconds,
+                    eventName: event.name,
+                },
+            });
+        }
+
+        try {
+
         if (payload.tokenType === 'STAY') {
             if (!event.isStayHostel) {
                 return res.status(400).json({
@@ -1152,6 +1346,36 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 },
                 orderBy: { scannedAt: 'desc' },
             });
+
+            const stayCooldownRemainingSeconds = computeCooldownRemainingSeconds(previous?.scannedAt, serverNow);
+            if (stayCooldownRemainingSeconds > 0) {
+                await createEventStudentAuthLogSafe({
+                    studentId: req.user.id,
+                    studentEmail: req.user.email,
+                    enrollmentNo: participant.enrollmentNo || null,
+                    action: 'EVENT_SCAN_COOLDOWN',
+                    status: 'FAILED',
+                    reason: 'STAY',
+                    metadata: {
+                        eventId: event.id,
+                        eventName: event.name,
+                        cooldownSecondsRemaining: stayCooldownRemainingSeconds,
+                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                    },
+                });
+
+                return res.status(429).json({
+                    success: false,
+                    data: {
+                        result: 'SCAN_COOLDOWN_ACTIVE',
+                        badge: 'AMBER',
+                        message: `Cooldown active. Retry in ${stayCooldownRemainingSeconds}s.`,
+                        cooldownSecondsRemaining: stayCooldownRemainingSeconds,
+                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                        eventName: event.name,
+                    },
+                });
+            }
 
             const direction = nextDirectionalState(previous?.direction || null);
             const scan = await prisma.eventStayScan.create({
@@ -1208,7 +1432,7 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
             };
             const dayWindow = buildLooseTimezoneWindow(dayKey);
 
-            const [countedConsumedMeals, candidateDayScans] = await Promise.all([
+            const [countedConsumedMeals, candidateDayScans, latestMealScan] = await Promise.all([
                 prisma.eventMealScan.count({ where: identityWhere }),
                 prisma.eventMealScan.findMany({
                     where: {
@@ -1222,7 +1446,48 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                         scannedAt: true,
                     },
                 }),
+                prisma.eventMealScan.findFirst({
+                    where: identityWhere,
+                    orderBy: { scannedAt: 'desc' },
+                    select: {
+                        scannedAt: true,
+                    },
+                }),
             ]);
+
+            const mealCooldownRemainingSeconds = computeCooldownRemainingSeconds(latestMealScan?.scannedAt, serverNow);
+            if (mealCooldownRemainingSeconds > 0) {
+                await createEventStudentAuthLogSafe({
+                    studentId: req.user.id,
+                    studentEmail: req.user.email,
+                    enrollmentNo: participant.enrollmentNo || null,
+                    action: 'EVENT_SCAN_COOLDOWN',
+                    status: 'FAILED',
+                    reason: 'MESS',
+                    metadata: {
+                        eventId: event.id,
+                        eventName: event.name,
+                        cooldownSecondsRemaining: mealCooldownRemainingSeconds,
+                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                        dayNumber,
+                        dayLabel: dayKey,
+                    },
+                });
+
+                return res.status(429).json({
+                    success: false,
+                    data: {
+                        result: 'SCAN_COOLDOWN_ACTIVE',
+                        badge: 'AMBER',
+                        message: `Cooldown active. Retry in ${mealCooldownRemainingSeconds}s.`,
+                        cooldownSecondsRemaining: mealCooldownRemainingSeconds,
+                        cooldownWindowSeconds: SCAN_COOLDOWN_WINDOW_MS / 1000,
+                        eventName: event.name,
+                        dayNumber,
+                        dayLabel: dayKey,
+                    },
+                });
+            }
 
             const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
                 ? participant.mealsConsumed
@@ -1248,6 +1513,23 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     .reduce((sum, item) => sum + item.coupons, 0);
 
                 if (scansToday >= dayCouponLimit) {
+                    await createEventStudentAuthLogSafe({
+                        studentId: req.user.id,
+                        studentEmail: req.user.email,
+                        enrollmentNo: participant.enrollmentNo || null,
+                        action: 'EVENT_MEAL_OVER_ATTEMPT',
+                        status: 'FAILED',
+                        reason: 'DAY_LIMIT_REACHED',
+                        metadata: {
+                            eventId: event.id,
+                            eventName: event.name,
+                            dayNumber,
+                            dayLabel: dayKey,
+                            dayConsumed: scansToday,
+                            dayCouponLimit,
+                        },
+                    });
+
                     return res.status(409).json({
                         success: false,
                         data: {
@@ -1270,6 +1552,21 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 maxMealsAllowed = dayCouponLimit;
                 remainingMeals = Math.max(dayCouponLimit - scansToday, 0);
             } else if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
+                await createEventStudentAuthLogSafe({
+                    studentId: req.user.id,
+                    studentEmail: req.user.email,
+                    enrollmentNo: participant.enrollmentNo || null,
+                    action: 'EVENT_MEAL_OVER_ATTEMPT',
+                    status: 'FAILED',
+                    reason: 'GLOBAL_LIMIT_REACHED',
+                    metadata: {
+                        eventId: event.id,
+                        eventName: event.name,
+                        consumedMeals,
+                        effectiveMaxMeals,
+                    },
+                });
+
                 return res.status(409).json({
                     success: false,
                     data: {
@@ -1370,6 +1667,9 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 message: 'Unsupported event QR token.',
             },
         });
+        } finally {
+            releaseScanLock(lockKey);
+        }
     } catch (err) {
         next(err);
     }
@@ -1600,6 +1900,16 @@ router.get('/reports/cron/send-daily', async (req, res, next) => {
 // ── POST /:id/report-recipients ────────────────────────────────────────────
 router.post('/:id/report-recipients', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(updateRecipientsSchema), async (req, res, next) => {
     try {
+        const existing = await prisma.campusEvent.findUnique({
+            where: { id: req.params.id },
+            select: {
+                id: true,
+                name: true,
+                reportRecipients: true,
+            },
+        });
+        if (!existing) throw new AppError('Event not found', 404);
+
         const event = await prisma.campusEvent.update({
             where: { id: req.params.id },
             data: {
@@ -1613,6 +1923,20 @@ router.post('/:id/report-recipients', authenticate, requireRole('HOD', 'SUPER_AD
                 reportRecipients: event.reportRecipients || [],
             },
         });
+
+        await logAction(req, {
+            action: 'UPDATE_EVENT_REPORT_RECIPIENTS',
+            entity: 'CampusEvent',
+            entityId: event.id,
+            oldValue: {
+                name: existing.name,
+                reportRecipients: existing.reportRecipients || [],
+            },
+            newValue: {
+                name: existing.name,
+                reportRecipients: event.reportRecipients || [],
+            },
+        }).catch(() => { });
     } catch (err) {
         next(err);
     }
@@ -1625,6 +1949,19 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
             where: { id: req.params.id },
             select: {
                 id: true,
+                name: true,
+                description: true,
+                isStayHostel: true,
+                hostelGateLabel: true,
+                reportRecipients: true,
+                eventDate: true,
+                startTime: true,
+                endTime: true,
+                timezone: true,
+                exitMode: true,
+                customMax: true,
+                appliesTo: true,
+                gateIds: true,
                 maxMealsPerParticipant: true,
                 dayWiseMealLimits: true,
             },
@@ -1636,13 +1973,31 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
         if (data.startTime) data.startTime = new Date(data.startTime);
         if (data.endTime) data.endTime = new Date(data.endTime);
 
-        const nextDayWiseMealLimits = data.dayWiseMealLimits !== undefined
+        let nextDayWiseMealLimits = data.dayWiseMealLimits !== undefined
             ? normalizeDayWiseMealLimits(data.dayWiseMealLimits)
             : normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits);
 
         const nextGlobalMealLimit = data.maxMealsPerParticipant !== undefined
             ? data.maxMealsPerParticipant
             : existingEvent.maxMealsPerParticipant;
+
+        const effectiveEventDate = data.eventDate || existingEvent.eventDate;
+        const effectiveEndTime = data.endTime || existingEvent.endTime;
+        const effectiveTimezone = data.timezone || existingEvent.timezone || 'Asia/Kolkata';
+
+        const shouldAutoRebuildDayWise = data.dayWiseMealLimits === undefined
+            && nextGlobalMealLimit != null
+            && (
+                data.maxMealsPerParticipant !== undefined
+                || data.eventDate !== undefined
+                || data.endTime !== undefined
+                || data.timezone !== undefined
+            );
+
+        if (shouldAutoRebuildDayWise) {
+            const durationDays = resolveEventDurationDays(effectiveEventDate, effectiveEndTime, effectiveTimezone);
+            nextDayWiseMealLimits = splitGlobalAcrossDays(nextGlobalMealLimit, durationDays);
+        }
 
         if (nextGlobalMealLimit != null) {
             const dayWiseTotal = sumDayWiseCoupons(nextDayWiseMealLimits);
@@ -1675,11 +2030,49 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
 
         res.json({ success: true, data: { event } });
 
+        const oldSnapshot = {
+            name: existingEvent.name,
+            description: existingEvent.description,
+            isStayHostel: existingEvent.isStayHostel,
+            hostelGateLabel: existingEvent.hostelGateLabel,
+            reportRecipients: existingEvent.reportRecipients,
+            eventDate: existingEvent.eventDate,
+            startTime: existingEvent.startTime,
+            endTime: existingEvent.endTime,
+            timezone: existingEvent.timezone,
+            exitMode: existingEvent.exitMode,
+            customMax: existingEvent.customMax,
+            appliesTo: existingEvent.appliesTo,
+            gateIds: existingEvent.gateIds,
+            maxMealsPerParticipant: existingEvent.maxMealsPerParticipant,
+            dayWiseMealLimits: normalizeDayWiseMealLimits(existingEvent.dayWiseMealLimits),
+        };
+
+        const newSnapshot = {
+            name: event.name,
+            description: event.description,
+            isStayHostel: event.isStayHostel,
+            hostelGateLabel: event.hostelGateLabel,
+            reportRecipients: event.reportRecipients,
+            eventDate: event.eventDate,
+            startTime: event.startTime,
+            endTime: event.endTime,
+            timezone: event.timezone,
+            exitMode: event.exitMode,
+            customMax: event.customMax,
+            appliesTo: event.appliesTo,
+            gateIds: event.gateIds,
+            maxMealsPerParticipant: event.maxMealsPerParticipant,
+            dayWiseMealLimits: normalizeDayWiseMealLimits(event.dayWiseMealLimits),
+            ...(messRules ? { messRules } : {}),
+        };
+
         await logAction(req, {
             action: 'UPDATE_CAMPUS_EVENT',
             entity: 'CampusEvent',
             entityId: event.id,
-            newValue: req.body,
+            oldValue: oldSnapshot,
+            newValue: newSnapshot,
         }).catch(() => { });
     } catch (err) {
         next(err);
