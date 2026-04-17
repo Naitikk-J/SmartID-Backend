@@ -54,6 +54,11 @@ const messRuleSchema = z.object({
     isActive: z.boolean().optional().default(true),
 });
 
+const dayWiseMealLimitSchema = z.object({
+    dayNumber: z.coerce.number().int().min(1).max(90),
+    coupons: z.coerce.number().int().min(0).max(500),
+});
+
 const createEventSchema = z.object({
     name: z.string().min(1),
     description: z.string().optional().nullable(),
@@ -69,6 +74,7 @@ const createEventSchema = z.object({
     appliesTo: z.array(z.string()).default(['ALL']),
     gateIds: z.array(z.string()).default([]),
     maxMealsPerParticipant: nullableIntField(1, 100).optional(),
+    dayWiseMealLimits: z.array(dayWiseMealLimitSchema).optional().default([]),
     participants: z.array(participantSchema).optional().default([]),
     messRules: z.array(messRuleSchema).optional().default([]),
 });
@@ -88,6 +94,7 @@ const updateEventSchema = z.object({
     appliesTo: z.array(z.string()).optional(),
     gateIds: z.array(z.string()).optional(),
     maxMealsPerParticipant: nullableIntField(1, 100).optional(),
+    dayWiseMealLimits: z.array(dayWiseMealLimitSchema).optional(),
     messRules: z.array(messRuleSchema).optional(),
 });
 
@@ -104,7 +111,10 @@ const upsertMessRulesSchema = z.object({
 });
 
 const updateEventMealSettingsSchema = z.object({
-    maxMealsPerParticipant: nullableIntField(1, 100),
+    maxMealsPerParticipant: nullableIntField(1, 100).optional(),
+    dayWiseMealLimits: z.array(dayWiseMealLimitSchema).optional(),
+}).refine((payload) => payload.maxMealsPerParticipant !== undefined || payload.dayWiseMealLimits !== undefined, {
+    message: 'At least one meal setting field is required',
 });
 
 const updateParticipantMealsSchema = z.object({
@@ -375,6 +385,61 @@ function buildParticipantMealStats(participant, eventMaxMeals) {
     };
 }
 
+function normalizeDayWiseMealLimits(rawLimits) {
+    if (!Array.isArray(rawLimits)) return [];
+
+    const dayMap = new Map();
+    for (const item of rawLimits) {
+        const dayNumber = Number(item?.dayNumber);
+        const coupons = Number(item?.coupons);
+        if (!Number.isInteger(dayNumber) || dayNumber < 1 || dayNumber > 90) continue;
+        if (!Number.isInteger(coupons) || coupons < 0) continue;
+        dayMap.set(dayNumber, coupons);
+    }
+
+    return Array.from(dayMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([dayNumber, coupons]) => ({ dayNumber, coupons }));
+}
+
+function formatDayKeyInTimezone(date, timezone) {
+    const target = date instanceof Date ? date : new Date(date);
+    const tz = timezone || 'Asia/Kolkata';
+
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    });
+
+    const parts = formatter.formatToParts(target);
+    const year = parts.find((part) => part.type === 'year')?.value;
+    const month = parts.find((part) => part.type === 'month')?.value;
+    const day = parts.find((part) => part.type === 'day')?.value;
+
+    if (!year || !month || !day) {
+        const fallback = new Date(target);
+        return fallback.toISOString().slice(0, 10);
+    }
+
+    return `${year}-${month}-${day}`;
+}
+
+function computeEventDayNumber(eventStart, scanMoment, timezone) {
+    const eventDayKey = formatDayKeyInTimezone(eventStart, timezone);
+    const scanDayKey = formatDayKeyInTimezone(scanMoment, timezone);
+
+    const eventDayUtc = new Date(`${eventDayKey}T00:00:00.000Z`);
+    const scanDayUtc = new Date(`${scanDayKey}T00:00:00.000Z`);
+    const diffDays = Math.floor((scanDayUtc.getTime() - eventDayUtc.getTime()) / (24 * 60 * 60 * 1000));
+
+    return {
+        dayNumber: Math.max(diffDays + 1, 1),
+        dayKey: scanDayKey,
+    };
+}
+
 function sanitizePhone(value) {
     const digits = String(value || '').replace(/\D/g, '');
     return digits.length >= 10 ? digits.slice(-10) : null;
@@ -617,6 +682,7 @@ router.post('/', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(creat
                 appliesTo: payload.appliesTo || ['ALL'],
                 gateIds: payload.gateIds || [],
                 maxMealsPerParticipant: payload.maxMealsPerParticipant ?? null,
+                dayWiseMealLimits: normalizeDayWiseMealLimits(payload.dayWiseMealLimits),
                 createdById: req.user.id,
             },
         });
@@ -674,7 +740,7 @@ router.get('/:id/participants', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
     try {
         const event = await prisma.campusEvent.findUnique({
             where: { id: req.params.id },
-            select: { id: true, maxMealsPerParticipant: true },
+            select: { id: true, maxMealsPerParticipant: true, dayWiseMealLimits: true },
         });
         if (!event) throw new AppError('Event not found', 404);
 
@@ -736,6 +802,7 @@ router.get('/:id/participants', authenticate, requireRole('HOD', 'SUPER_ADMIN', 
                 pages: Math.ceil(total / limit),
                 eventMealSettings: {
                     maxMealsPerParticipant: event.maxMealsPerParticipant,
+                    dayWiseMealLimits: normalizeDayWiseMealLimits(event.dayWiseMealLimits),
                 },
             },
         });
@@ -750,12 +817,14 @@ router.patch('/:id/meal-settings', authenticate, requireRole('HOD', 'SUPER_ADMIN
         const event = await prisma.campusEvent.update({
             where: { id: req.params.id },
             data: {
-                maxMealsPerParticipant: req.body.maxMealsPerParticipant,
+                ...(req.body.maxMealsPerParticipant !== undefined ? { maxMealsPerParticipant: req.body.maxMealsPerParticipant } : {}),
+                ...(req.body.dayWiseMealLimits !== undefined ? { dayWiseMealLimits: normalizeDayWiseMealLimits(req.body.dayWiseMealLimits) } : {}),
             },
             select: {
                 id: true,
                 name: true,
                 maxMealsPerParticipant: true,
+                dayWiseMealLimits: true,
             },
         });
 
@@ -1051,23 +1120,73 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 : null;
             const effectiveMaxMeals = participantMaxMeals ?? eventMaxMeals;
 
-            let consumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
+            const dayWiseMealLimits = normalizeDayWiseMealLimits(event.dayWiseMealLimits);
+            const hasDayWiseConfig = dayWiseMealLimits.length > 0;
+            const timezone = event.timezone || 'Asia/Kolkata';
+            const { dayNumber, dayKey } = computeEventDayNumber(event.eventDate, scannedAt, timezone);
+
+            const historicalMealScans = await prisma.eventMealScan.findMany({
+                where: {
+                    eventId: event.id,
+                    OR: [
+                        { participantId: participant.id },
+                        { studentId: req.user.id },
+                    ],
+                },
+                orderBy: { scannedAt: 'asc' },
+                select: {
+                    id: true,
+                    scannedAt: true,
+                },
+            });
+
+            const countedConsumedMeals = historicalMealScans.length;
+            const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
                 ? participant.mealsConsumed
-                : null;
+                : 0;
+            const consumedMeals = Math.max(countedConsumedMeals, explicitConsumedMeals);
 
-            if (consumedMeals == null) {
-                consumedMeals = await prisma.eventMealScan.count({
-                    where: {
-                        eventId: event.id,
-                        OR: [
-                            { participantId: participant.id },
-                            { studentId: req.user.id },
-                        ],
-                    },
-                });
-            }
+            const scansToday = historicalMealScans.reduce((total, mealScan) => {
+                if (formatDayKeyInTimezone(mealScan.scannedAt, timezone) !== dayKey) return total;
+                return total + 1;
+            }, 0);
 
-            if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
+            let mealNumber = consumedMeals + 1;
+            let maxMealsAllowed = effectiveMaxMeals;
+            let remainingMeals = effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumedMeals, 0);
+            let dayCouponLimit = null;
+
+            if (hasDayWiseConfig) {
+                const selectedDay = dayWiseMealLimits.find((item) => item.dayNumber === dayNumber) || null;
+                dayCouponLimit = selectedDay ? selectedDay.coupons : 0;
+
+                const couponsBeforeDay = dayWiseMealLimits
+                    .filter((item) => item.dayNumber < dayNumber)
+                    .reduce((sum, item) => sum + item.coupons, 0);
+
+                if (scansToday >= dayCouponLimit) {
+                    return res.status(409).json({
+                        success: false,
+                        data: {
+                            result: 'MEAL_DAY_LIMIT_REACHED',
+                            badge: 'AMBER',
+                            message: `Day ${dayNumber} coupons finished (${scansToday}/${dayCouponLimit}). Previous day coupons expire at midnight.`,
+                            consumedMeals,
+                            maxMealsAllowed: dayCouponLimit,
+                            remainingMeals: 0,
+                            eventName: event.name,
+                            dayNumber,
+                            dayLabel: dayKey,
+                            dayConsumed: scansToday,
+                            dayCouponLimit,
+                        },
+                    });
+                }
+
+                mealNumber = couponsBeforeDay + scansToday + 1;
+                maxMealsAllowed = dayCouponLimit;
+                remainingMeals = Math.max(dayCouponLimit - scansToday, 0);
+            } else if (effectiveMaxMeals != null && consumedMeals >= effectiveMaxMeals) {
                 return res.status(409).json({
                     success: false,
                     data: {
@@ -1082,7 +1201,6 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                 });
             }
 
-            const mealNumber = consumedMeals + 1;
             const mealLabel = `Meal ${mealNumber}`;
 
             if (!confirmMeal) {
@@ -1095,14 +1213,24 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                         mealNumber,
                         mealLabel,
                         consumedMeals,
-                        maxMealsAllowed: effectiveMaxMeals,
-                        remainingMeals: effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - consumedMeals, 0),
+                        maxMealsAllowed,
+                        remainingMeals,
                         eventName: event.name,
+                        dayNumber,
+                        dayLabel: dayKey,
+                        dayConsumed: scansToday,
+                        dayCouponLimit,
                     },
                 });
             }
 
             const nextConsumedMeals = consumedMeals + 1;
+            const nextDayConsumed = scansToday + 1;
+            const postConfirmRemaining = maxMealsAllowed == null
+                ? null
+                : hasDayWiseConfig
+                    ? Math.max(maxMealsAllowed - nextDayConsumed, 0)
+                    : Math.max(maxMealsAllowed - nextConsumedMeals, 0);
             const [mealScan] = await prisma.$transaction([
                 prisma.eventMealScan.create({
                     data: {
@@ -1118,6 +1246,9 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                             longitude: Number.isFinite(longitude) ? longitude : null,
                             accuracy: Number.isFinite(accuracy) ? accuracy : null,
                             actorEmail: req.user.email,
+                            dayNumber,
+                            dayLabel: dayKey,
+                            dayCouponLimit,
                         },
                     },
                 }),
@@ -1136,10 +1267,14 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     mealNumber,
                     mealLabel,
                     consumedMeals: nextConsumedMeals,
-                    maxMealsAllowed: effectiveMaxMeals,
-                    remainingMeals: effectiveMaxMeals == null ? null : Math.max(effectiveMaxMeals - nextConsumedMeals, 0),
+                    maxMealsAllowed,
+                    remainingMeals: postConfirmRemaining,
                     scanEventId: mealScan.id,
                     eventName: event.name,
+                    dayNumber,
+                    dayLabel: dayKey,
+                    dayConsumed: nextDayConsumed,
+                    dayCouponLimit,
                 },
             });
         }
@@ -1407,6 +1542,10 @@ router.patch('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(u
         if (data.eventDate) data.eventDate = new Date(data.eventDate);
         if (data.startTime) data.startTime = new Date(data.startTime);
         if (data.endTime) data.endTime = new Date(data.endTime);
+
+        if (data.dayWiseMealLimits !== undefined) {
+            data.dayWiseMealLimits = normalizeDayWiseMealLimits(data.dayWiseMealLimits);
+        }
 
         const messRules = Array.isArray(data.messRules) ? data.messRules : null;
         if (messRules) {

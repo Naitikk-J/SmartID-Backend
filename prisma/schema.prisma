@@ -291,6 +291,7 @@ model CampusEvent {
   timezone    String     @default("Asia/Kolkata")
   importedCount Int      @default(0)
   maxMealsPerParticipant Int?
+  dayWiseMealLimits Json?
   eventDate   DateTime
   startTime   DateTime
   endTime     DateTime
