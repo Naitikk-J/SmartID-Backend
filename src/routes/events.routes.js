@@ -1711,19 +1711,41 @@ router.patch('/:id/toggle', authenticate, requireRole('SUPER_ADMIN'), async (req
     }
 });
 
-// ── DELETE /:id — Soft delete ───────────────────────────────
-router.delete('/:id', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+// ── DELETE /:id — Hard delete (cascade event-owned data) ─────
+router.delete('/:id', authenticate, requireRole('HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
-        const event = await prisma.campusEvent.update({
+        const existing = await prisma.campusEvent.findUnique({
             where: { id: req.params.id },
-            data: { isActive: false },
+            select: {
+                id: true,
+                name: true,
+            },
         });
-        res.json({ success: true, data: { event, message: 'Event deactivated' } });
+        if (!existing) throw new AppError('Event not found', 404);
+
+        await prisma.$transaction([
+            prisma.eventMealScan.deleteMany({ where: { eventId: existing.id } }),
+            prisma.eventStayScan.deleteMany({ where: { eventId: existing.id } }),
+            prisma.eventMessRule.deleteMany({ where: { eventId: existing.id } }),
+            prisma.eventParticipant.deleteMany({ where: { eventId: existing.id } }),
+            prisma.campusEvent.delete({ where: { id: existing.id } }),
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                id: existing.id,
+                message: 'Event deleted permanently',
+            },
+        });
 
         await logAction(req, {
-            action: 'DEACTIVATE_CAMPUS_EVENT',
+            action: 'DELETE_CAMPUS_EVENT',
             entity: 'CampusEvent',
-            entityId: event.id,
+            entityId: existing.id,
+            oldValue: {
+                name: existing.name,
+            },
         }).catch(() => { });
     } catch (err) {
         next(err);
