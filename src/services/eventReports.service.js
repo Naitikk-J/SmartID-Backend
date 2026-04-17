@@ -1177,6 +1177,24 @@ async function sendDailyEventReportForEvent(event, date = new Date()) {
     };
 }
 
+async function processInBatches(items, batchSize, worker) {
+    const safeBatchSize = Math.max(1, Number(batchSize) || 1);
+    const results = [];
+
+    for (let index = 0; index < items.length; index += safeBatchSize) {
+        const batch = items.slice(index, index + safeBatchSize);
+        const settled = await Promise.allSettled(batch.map((item) => worker(item)));
+        for (let i = 0; i < settled.length; i += 1) {
+            results.push({
+                item: batch[i],
+                settled: settled[i],
+            });
+        }
+    }
+
+    return results;
+}
+
 async function sendDailyEventReports(date = new Date()) {
     const events = await prisma.campusEvent.findMany({
         where: {
@@ -1189,18 +1207,27 @@ async function sendDailyEventReports(date = new Date()) {
         },
     });
 
+    const sendConcurrency = Math.max(1, Number(process.env.EVENT_REPORT_SEND_CONCURRENCY || 3));
+
+    const processed = await processInBatches(events, sendConcurrency, async (event) => {
+        const outcome = await sendDailyEventReportForEvent(event, date);
+        return { eventId: event.id, ...outcome };
+    });
+
     const outcomes = [];
-    for (const event of events) {
-        try {
-            const outcome = await sendDailyEventReportForEvent(event, date);
-            outcomes.push({ eventId: event.id, ...outcome });
-        } catch (err) {
-            logger.error('[EVENT-REPORT] Failed to send event daily report', {
-                eventId: event.id,
-                error: err.message,
-            });
-            outcomes.push({ eventId: event.id, sent: false, error: err.message });
+    for (const entry of processed) {
+        const { item, settled } = entry;
+        if (settled.status === 'fulfilled') {
+            outcomes.push(settled.value);
+            continue;
         }
+
+        const errorMessage = settled.reason?.message || String(settled.reason || 'UNKNOWN_ERROR');
+        logger.error('[EVENT-REPORT] Failed to send event daily report', {
+            eventId: item.id,
+            error: errorMessage,
+        });
+        outcomes.push({ eventId: item.id, sent: false, error: errorMessage });
     }
 
     return outcomes;

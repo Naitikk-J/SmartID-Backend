@@ -449,6 +449,16 @@ function formatDayKeyInTimezone(date, timezone) {
     return `${year}-${month}-${day}`;
 }
 
+function buildLooseTimezoneWindow(dayKey) {
+    const pivot = new Date(`${dayKey}T00:00:00.000Z`);
+    const minOffsetMs = 18 * 60 * 60 * 1000;
+    const maxOffsetMs = 42 * 60 * 60 * 1000;
+    return {
+        start: new Date(pivot.getTime() - minOffsetMs),
+        end: new Date(pivot.getTime() + maxOffsetMs - 1),
+    };
+}
+
 function computeEventDayNumber(eventStart, scanMoment, timezone) {
     const eventDayKey = formatDayKeyInTimezone(eventStart, timezone);
     const scanDayKey = formatDayKeyInTimezone(scanMoment, timezone);
@@ -1189,29 +1199,37 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
             const hasDayWiseConfig = dayWiseMealLimits.length > 0;
             const timezone = event.timezone || 'Asia/Kolkata';
             const { dayNumber, dayKey } = computeEventDayNumber(event.eventDate, scannedAt, timezone);
+            const identityWhere = {
+                eventId: event.id,
+                OR: [
+                    { participantId: participant.id },
+                    { studentId: req.user.id },
+                ],
+            };
+            const dayWindow = buildLooseTimezoneWindow(dayKey);
 
-            const historicalMealScans = await prisma.eventMealScan.findMany({
-                where: {
-                    eventId: event.id,
-                    OR: [
-                        { participantId: participant.id },
-                        { studentId: req.user.id },
-                    ],
-                },
-                orderBy: { scannedAt: 'asc' },
-                select: {
-                    id: true,
-                    scannedAt: true,
-                },
-            });
+            const [countedConsumedMeals, candidateDayScans] = await Promise.all([
+                prisma.eventMealScan.count({ where: identityWhere }),
+                prisma.eventMealScan.findMany({
+                    where: {
+                        ...identityWhere,
+                        scannedAt: {
+                            gte: dayWindow.start,
+                            lte: dayWindow.end,
+                        },
+                    },
+                    select: {
+                        scannedAt: true,
+                    },
+                }),
+            ]);
 
-            const countedConsumedMeals = historicalMealScans.length;
             const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
                 ? participant.mealsConsumed
                 : 0;
             const consumedMeals = Math.max(countedConsumedMeals, explicitConsumedMeals);
 
-            const scansToday = historicalMealScans.reduce((total, mealScan) => {
+            const scansToday = candidateDayScans.reduce((total, mealScan) => {
                 if (formatDayKeyInTimezone(mealScan.scannedAt, timezone) !== dayKey) return total;
                 return total + 1;
             }, 0);
