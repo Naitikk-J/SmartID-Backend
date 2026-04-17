@@ -1264,16 +1264,25 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
             });
         }
 
-        const participant = await prisma.eventParticipant.findFirst({
+        let participant = await prisma.eventParticipant.findFirst({
             where: {
                 eventId: event.id,
-                OR: [
-                    { studentId: req.user.id },
-                    { email: req.user.email },
-                ],
+                studentId: req.user.id,
                 isActive: true,
             },
+            orderBy: { createdAt: 'asc' },
         });
+
+        if (!participant) {
+            participant = await prisma.eventParticipant.findFirst({
+                where: {
+                    eventId: event.id,
+                    email: req.user.email,
+                    isActive: true,
+                },
+                orderBy: { createdAt: 'asc' },
+            });
+        }
 
         if (!participant) {
             return res.status(403).json({
@@ -1491,8 +1500,10 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
 
                 const explicitConsumedMeals = Number.isInteger(participant.mealsConsumed) && participant.mealsConsumed >= 0
                     ? participant.mealsConsumed
-                    : 0;
-                const consumedMeals = Math.max(countedConsumedMeals, explicitConsumedMeals);
+                    : null;
+                // When admin manually edits consumed meals, that value should drive quota checks.
+                // Fallback to counted scans only if explicit value is absent.
+                const consumedMeals = explicitConsumedMeals ?? countedConsumedMeals;
 
                 const scansToday = candidateDayScans.reduce((total, mealScan) => {
                     if (formatDayKeyInTimezone(mealScan.scannedAt, timezone) !== dayKey) return total;
