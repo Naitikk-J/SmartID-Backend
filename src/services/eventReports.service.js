@@ -886,6 +886,50 @@ async function buildEventDailyWorkbook({ eventId, date = new Date() }) {
     ]);
     summarySheet.getRow(1).font = { bold: true };
 
+    // --- New Section: Outside or Missing Entry ---
+    // Find participants who are outside (last event direction = EXIT or hostel last direction = EXIT) or never had an ENTRY
+    const outsideOrMissingEntryRows = participantRows.filter(row => {
+        // Never had an ENTRY (eventEntryCount === 0)
+        if ((row.eventEntryCount || 0) === 0) return true;
+        // Last direction is EXIT (outside)
+        if (row.eventLastDirection === 'EXIT') return true;
+        // Hostel last direction is EXIT (outside hostel)
+        if (row.hostelLastDirection === 'EXIT') return true;
+        return false;
+    }).map(row => ({
+        name: row.name,
+        enrollmentNo: row.enrollmentNo,
+        email: row.email,
+        phone: row.phone,
+        studentType: row.studentType,
+        eventEntries: row.eventEntryCount,
+        eventExits: row.eventExitCount,
+        eventStatus: row.eventStatus,
+        hostelStatus: row.hostelStatus,
+        notes:
+            (row.eventEntryCount === 0)
+                ? 'No ENTRY scan for event'
+                : ((row.eventLastDirection === 'EXIT' || row.hostelLastDirection === 'EXIT') ? 'Currently OUTSIDE' : '')
+    }));
+
+    addWorksheetWithColumns(
+        workbook,
+        'Outside or Missing Entry',
+        [
+            { header: 'Name', key: 'name', width: 24 },
+            { header: 'Enrollment No', key: 'enrollmentNo', width: 18 },
+            { header: 'Email', key: 'email', width: 28 },
+            { header: 'Phone', key: 'phone', width: 15 },
+            { header: 'Student Type', key: 'studentType', width: 16 },
+            { header: 'Event Entries', key: 'eventEntries', width: 12 },
+            { header: 'Event Exits', key: 'eventExits', width: 12 },
+            { header: 'Event Status', key: 'eventStatus', width: 14 },
+            { header: 'Hostel Status', key: 'hostelStatus', width: 14 },
+            { header: 'Notes', key: 'notes', width: 32 },
+        ],
+        outsideOrMissingEntryRows,
+    );
+
     addWorksheetWithColumns(
         workbook,
         'Participant Summary',
@@ -1169,6 +1213,46 @@ async function buildEventDailyCsv({ eventId, date = new Date(), kind = 'combined
             combinedRows,
         );
         fileName = `${event.name.replace(/\s+/g, '_')}_${dayLabel}_combined.csv`;
+        // --- New Section: Outside or Missing Entry (CSV) ---
+        // Fetch participants and logs for this event/day
+        const { participants, stayLogs, mealLogs, authLogs, hostelExitLogs } = await fetchDailyData(eventId, date);
+        const participantRows = buildParticipantReportRows({
+            participants,
+            stayLogs,
+            mealLogs,
+            authLogs,
+            hostelExitLogs,
+            event,
+            timezone: event.timezone || 'Asia/Kolkata',
+            dayKey: dayLabel,
+        });
+        const outsideOrMissingEntryRows = participantRows.filter(row => {
+            if ((row.eventEntryCount || 0) === 0) return true;
+            if (row.eventLastDirection === 'EXIT') return true;
+            if (row.hostelLastDirection === 'EXIT') return true;
+            return false;
+        }).map(row => ({
+            name: row.name,
+            enrollmentNo: row.enrollmentNo,
+            email: row.email,
+            phone: row.phone,
+            studentType: row.studentType,
+            eventEntries: row.eventEntryCount,
+            eventExits: row.eventExitCount,
+            eventStatus: row.eventStatus,
+            hostelStatus: row.hostelStatus,
+            notes:
+                (row.eventEntryCount === 0)
+                    ? 'No ENTRY scan for event'
+                    : ((row.eventLastDirection === 'EXIT' || row.hostelLastDirection === 'EXIT') ? 'Currently OUTSIDE' : '')
+        }));
+        if (outsideOrMissingEntryRows.length > 0) {
+            csv += '\n\n"--- Outside or Missing Entry ---"\n';
+            csv += buildCsv(
+                ['name', 'enrollmentNo', 'email', 'phone', 'studentType', 'eventEntries', 'eventExits', 'eventStatus', 'hostelStatus', 'notes'],
+                outsideOrMissingEntryRows,
+            );
+        }
     }
 
     return {
