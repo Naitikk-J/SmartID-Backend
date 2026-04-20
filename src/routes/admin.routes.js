@@ -245,7 +245,7 @@ router.get('/audit-log', authenticate, requireRole('SUPER_ADMIN'), async (req, r
 });
 
 // ── GET /student-auth-logs ──────────────────────────────────
-router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN', 'WARDEN'), async (req, res, next) => {
     try {
         const { page = 1, limit = 50, action, status, enrollmentNo, deviceId, search, fromDate, toDate, blockedOnly } = req.query;
         const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
@@ -342,7 +342,7 @@ router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN'), async
 });
 
 // ── GET /device-rebind-requests ─────────────────────────────
-router.get('/device-rebind-requests', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+router.get('/device-rebind-requests', authenticate, requireRole('SUPER_ADMIN', 'WARDEN'), async (req, res, next) => {
     try {
         const { page = 1, limit = 50, status = 'PENDING', search } = req.query;
         const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
@@ -423,7 +423,7 @@ router.get('/device-rebind-requests', authenticate, requireRole('SUPER_ADMIN'), 
 });
 
 // ── PATCH /device-rebind-requests/:id/decision ─────────────
-router.patch('/device-rebind-requests/:id/decision', authenticate, requireRole('SUPER_ADMIN'), validate(resolveRebindDecisionSchema), async (req, res, next) => {
+router.patch('/device-rebind-requests/:id/decision', authenticate, requireRole('SUPER_ADMIN', 'WARDEN'), validate(resolveRebindDecisionSchema), async (req, res, next) => {
     try {
         const requestRecord = await prisma.deviceRebindRequest.findUnique({
             where: { id: req.params.id },
