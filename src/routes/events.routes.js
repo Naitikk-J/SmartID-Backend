@@ -27,7 +27,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 
 const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']);
 const SCAN_IDEMPOTENCY_WINDOW_MS = 5 * 1000;
-const SCAN_COOLDOWN_WINDOW_MS = 20 * 1000;
+const SCAN_COOLDOWN_WINDOW_MS = 300 * 1000;
 const activeScanIdempotencyLocks = new Map();
 
 const nullableIntField = (min, max) => z.preprocess((value) => {
