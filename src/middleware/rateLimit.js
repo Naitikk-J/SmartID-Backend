@@ -4,10 +4,10 @@
 
 const rateLimit = require('express-rate-limit');
 
-// Scan verify endpoint: 30 req/min per IP
+// Scan verify endpoint: 100 req/min per IP
 const scanRateLimit = rateLimit({
     windowMs: 60 * 1000,
-    max: 30,
+    max: 100,
     message: {
         success: false,
         error: 'Too many scan requests — limit is 30 per minute',
@@ -17,7 +17,7 @@ const scanRateLimit = rateLimit({
     legacyHeaders: false,
 });
 
-// Auth login: 10 req/15min per IP (brute force protection)
+// Auth login: 100 req/15min per IP (brute force protection)
 const loginRateLimit = rateLimit({
     windowMs: 15 * 1000,
     max: 100,
@@ -30,10 +30,10 @@ const loginRateLimit = rateLimit({
     legacyHeaders: false,
 });
 
-// General: 100 req/min per IP
+// General: 1000 req/min per IP
 const generalRateLimit = rateLimit({
     windowMs: 60 * 1000,
-    max: 100,
+    max: 1000,
     message: {
         success: false,
         error: 'Too many requests — please slow down',
