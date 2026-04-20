@@ -293,6 +293,8 @@ model CampusEvent {
   maxMealsPerParticipant Int?
   dayWiseMealLimits Json?
   messSharedQrToken String?
+  stayQrToken String? // static stay qr
+  messQrToken String? // static mess qr
   eventDate   DateTime
   startTime   DateTime
   endTime     DateTime

@@ -1143,20 +1143,27 @@ router.get('/:id/stay/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
             throw new AppError('Stay-hostel flow is disabled for this event', 400);
         }
 
-        const token = createEventStayQrToken({
-            eventId: event.id,
-            eventName: event.name,
-            createdById: req.user.id,
-            ttlSeconds: Number(req.query.ttl || 90),
-        });
-
+        // --- STATIC STAY QR PATCH ---
+        if (!event.stayQrToken) {
+            const token = createEventStayQrToken({
+                eventId: event.id,
+                eventName: event.name,
+                createdById: req.user.id,
+                ttlSeconds: 365 * 24 * 60 * 60, // 1 year
+            });
+            await prisma.campusEvent.update({
+                where: { id: event.id },
+                data: { stayQrToken: token.token },
+            });
+            event.stayQrToken = token.token;
+        }
         res.json({
             success: true,
             data: {
                 eventId: event.id,
                 eventName: event.name,
-                qr_token: token.token,
-                expires_at: token.expiresAt.toISOString(),
+                qr_token: event.stayQrToken,
+                expires_at: null,
             },
         });
     } catch (err) {
@@ -1170,27 +1177,28 @@ router.get('/:id/mess/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
         const event = await prisma.campusEvent.findUnique({ where: { id: req.params.id } });
         if (!event) throw new AppError('Event not found', 404);
 
-        const sharedQrToken = await ensureMessSharedQrToken(event);
-
-        const rules = await prisma.eventMessRule.findMany({
-            where: { eventId: event.id, isActive: true },
-            orderBy: { mealNumber: 'asc' },
-        });
-
-        const hydrated = [];
-        for (const rule of rules) {
-            if (rule.qrToken !== sharedQrToken) {
-                const updated = await prisma.eventMessRule.update({
-                    where: { id: rule.id },
-                    data: { qrToken: sharedQrToken },
-                });
-                hydrated.push(updated);
-            } else {
-                hydrated.push(rule);
-            }
+        // --- STATIC MESS QR PATCH ---
+        if (!event.messQrToken) {
+            const token = createEventMessQrToken({
+                eventId: event.id,
+                eventEndsAt: event.endTime,
+            });
+            await prisma.campusEvent.update({
+                where: { id: event.id },
+                data: { messQrToken: token.token },
+            });
+            event.messQrToken = token.token;
         }
-
-        res.json({ success: true, data: { sharedQrToken, rules: hydrated } });
+        res.json({
+            success: true,
+            data: {
+                eventId: event.id,
+                eventName: event.name,
+                sharedQrToken: event.messQrToken,
+                sharedQrExpiresAt: null,
+                rules: [],
+            },
+        });
     } catch (err) {
         next(err);
     }
