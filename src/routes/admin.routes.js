@@ -35,6 +35,11 @@ const resolveRebindDecisionSchema = z.object({
     adminNote: z.string().trim().max(240).optional(),
 });
 
+const revokeDeviceBindingSchema = z.object({
+    email: z.string().trim().email(),
+    reason: z.string().trim().max(240).optional(),
+});
+
 function normalizeBoolean(value) {
     return String(value || '').trim().toLowerCase() === 'true' || String(value || '').trim() === '1';
 }
@@ -334,6 +339,183 @@ router.get('/student-auth-logs', authenticate, requireRole('SUPER_ADMIN', 'WARDE
                 page: parsedPage,
                 pages: Math.ceil(total / parsedLimit),
                 limit: parsedLimit,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /device-bindings ────────────────────────────────────
+router.get('/device-bindings', authenticate, requireRole('SUPER_ADMIN', 'WARDEN'), async (req, res, next) => {
+    try {
+        const { page = 1, limit = 50, search, deviceId } = req.query;
+        const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+        const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+        const whereClauses = [{ linkedDeviceId: { not: null } }];
+
+        const trimmedDeviceId = String(deviceId || '').trim();
+        if (trimmedDeviceId) {
+            whereClauses.push({
+                linkedDeviceId: {
+                    contains: trimmedDeviceId,
+                    mode: 'insensitive',
+                },
+            });
+        }
+
+        const needle = String(search || '').trim();
+        if (needle) {
+            whereClauses.push({
+                OR: [
+                    { enrollmentNo: { contains: needle, mode: 'insensitive' } },
+                    { fullName: { contains: needle, mode: 'insensitive' } },
+                    { email: { contains: needle, mode: 'insensitive' } },
+                    { linkedDeviceId: { contains: needle, mode: 'insensitive' } },
+                    { linkedDeviceLabel: { contains: needle, mode: 'insensitive' } },
+                    { linkedDevicePlatform: { contains: needle, mode: 'insensitive' } },
+                ],
+            });
+        }
+
+        const where = whereClauses.length === 1 ? whereClauses[0] : { AND: whereClauses };
+
+        const [bindings, total] = await Promise.all([
+            prisma.student.findMany({
+                where,
+                select: {
+                    id: true,
+                    fullName: true,
+                    enrollmentNo: true,
+                    email: true,
+                    linkedDeviceId: true,
+                    linkedDeviceLabel: true,
+                    linkedDevicePlatform: true,
+                    deviceLinkedAt: true,
+                    lastLoginAt: true,
+                    lastLogoutAt: true,
+                },
+                orderBy: [
+                    { deviceLinkedAt: 'desc' },
+                    { updatedAt: 'desc' },
+                ],
+                skip: (parsedPage - 1) * parsedLimit,
+                take: parsedLimit,
+            }),
+            prisma.student.count({ where }),
+        ]);
+
+        res.json({
+            success: true,
+            data: {
+                bindings,
+                total,
+                page: parsedPage,
+                pages: Math.ceil(total / parsedLimit),
+                limit: parsedLimit,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /device-bindings/revoke ───────────────────────────
+router.patch('/device-bindings/revoke', authenticate, requireRole('SUPER_ADMIN', 'WARDEN'), validate(revokeDeviceBindingSchema), async (req, res, next) => {
+    try {
+        const email = String(req.body.email || '').trim().toLowerCase();
+        const reason = String(req.body.reason || '').trim() || 'REVOKED_BY_ADMIN';
+
+        const student = await prisma.student.findUnique({
+            where: { email },
+            select: {
+                id: true,
+                fullName: true,
+                enrollmentNo: true,
+                email: true,
+                linkedDeviceId: true,
+                linkedDeviceLabel: true,
+                linkedDevicePlatform: true,
+            },
+        });
+
+        if (!student) {
+            throw new AppError('Student not found for this email', 404, 'STUDENT_NOT_FOUND');
+        }
+
+        if (!student.linkedDeviceId) {
+            throw new AppError('No active device binding found for this email', 409, 'DEVICE_BINDING_NOT_FOUND');
+        }
+
+        const previousBinding = {
+            deviceId: student.linkedDeviceId,
+            deviceLabel: student.linkedDeviceLabel,
+            devicePlatform: student.linkedDevicePlatform,
+        };
+
+        const updatedStudent = await prisma.student.update({
+            where: { id: student.id },
+            data: {
+                linkedDeviceId: null,
+                linkedDeviceLabel: null,
+                linkedDevicePlatform: null,
+                deviceLinkedAt: null,
+            },
+            select: {
+                id: true,
+                fullName: true,
+                enrollmentNo: true,
+                email: true,
+                linkedDeviceId: true,
+                linkedDeviceLabel: true,
+                linkedDevicePlatform: true,
+                deviceLinkedAt: true,
+            },
+        });
+
+        await prisma.studentAuthLog.create({
+            data: {
+                studentId: student.id,
+                studentEmail: student.email,
+                enrollmentNo: student.enrollmentNo,
+                action: 'DEVICE_BINDING_REVOKED_BY_ADMIN',
+                status: 'SUCCESS',
+                reason,
+                deviceId: previousBinding.deviceId,
+                deviceLabel: previousBinding.deviceLabel,
+                devicePlatform: previousBinding.devicePlatform,
+                metadata: {
+                    revokedBy: req.user.id,
+                    revokedByRole: req.user.role,
+                },
+            },
+        }).catch(() => { });
+
+        await createStudentAlertFromAdmin({
+            actorId: req.user.id,
+            studentId: student.id,
+            title: 'Device binding revoked',
+            body: 'Your linked device was revoked by admin. Please login again to bind a new device.',
+            targetType: 'AUTH',
+            screen: 'login',
+        });
+
+        await logAction(req, {
+            action: 'REVOKE_STUDENT_DEVICE_BINDING',
+            entity: 'Student',
+            entityId: student.id,
+            newValue: {
+                email,
+                reason,
+                previousBinding,
+            },
+        }).catch(() => { });
+
+        res.json({
+            success: true,
+            data: {
+                student: updatedStudent,
             },
         });
     } catch (err) {
