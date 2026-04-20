@@ -1143,8 +1143,24 @@ router.get('/:id/stay/qr', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACU
             throw new AppError('Stay-hostel flow is disabled for this event', 400);
         }
 
-        // --- STATIC STAY QR PATCH ---
+        // --- STATIC STAY QR PATCH (regenerate if expired, else keep static) ---
+        let shouldRegenerate = false;
         if (!event.stayQrToken) {
+            shouldRegenerate = true;
+        } else {
+            // Check if expired
+            const { valid, payload } = verifyEventQrToken(event.stayQrToken) || {};
+            if (!valid && payload && payload.exp) {
+                const expDate = new Date(Number(payload.exp) * 1000);
+                if (expDate < new Date()) {
+                    shouldRegenerate = true;
+                }
+            } else if (!valid) {
+                // If invalid for any other reason, also regenerate
+                shouldRegenerate = true;
+            }
+        }
+        if (shouldRegenerate) {
             const token = createEventStayQrToken({
                 eventId: event.id,
                 eventName: event.name,
