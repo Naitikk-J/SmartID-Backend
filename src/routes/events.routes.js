@@ -457,7 +457,8 @@ function startAndEndOfDate(dateInput) {
     return { start, end };
 }
 
-function nextDirectionalState(lastDirection) {
+function nextDirectionalState(lastDirection, isFirstScan = false) {
+    if (isFirstScan) return 'EXIT';
     if (lastDirection === 'ENTRY') return 'EXIT';
     return 'ENTRY';
 }
@@ -1414,7 +1415,8 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
                     });
                 }
 
-                const direction = nextDirectionalState(previous?.direction || null);
+                const isFirstScan = !previous;
+                const direction = nextDirectionalState(previous?.direction || null, isFirstScan);
                 const scan = await prisma.eventStayScan.create({
                     data: {
                         eventId: event.id,
