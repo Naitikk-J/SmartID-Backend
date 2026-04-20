@@ -210,16 +210,43 @@ const eventScanSchema = z.object({
 });
 
 function normalizeParticipantRow(row) {
+    const normalizeHeaderKey = (value) => String(value || '')
+        .replace(/\u00A0/g, ' ')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+
+    const pick = (aliases) => {
+        for (const alias of aliases) {
+            if (Object.prototype.hasOwnProperty.call(row, alias)) {
+                const directValue = row[alias];
+                if (directValue != null && String(directValue).trim() !== '') return directValue;
+            }
+        }
+
+        const normalizedMap = new Map();
+        Object.entries(row || {}).forEach(([key, value]) => {
+            normalizedMap.set(normalizeHeaderKey(key), value);
+        });
+
+        for (const alias of aliases) {
+            const candidate = normalizedMap.get(normalizeHeaderKey(alias));
+            if (candidate != null && String(candidate).trim() !== '') return candidate;
+        }
+
+        return '';
+    };
+
     const fullName = String(
-        row.fullName || row.name || row.studentName || row.student_name || '',
+        pick(['fullName', 'name', 'studentName', 'student_name', 'Name', 'Name ']),
     ).trim();
-    const email = String(row.email || row.loginId || row.login_id || '').trim().toLowerCase();
-    const phone = String(row.phone || row.mobile || row.password || '').trim();
-    const enrollmentNo = String(row.enrollmentNo || row.enrollment_no || row.enrollment || '').trim();
-    const department = String(row.department || 'EVENT').trim() || 'EVENT';
-    const yearRaw = Number(row.year || 1);
+    const email = String(pick(['email', 'loginId', 'login_id', 'Email', 'Email ID'])).trim().toLowerCase();
+    const phone = String(pick(['phone', 'mobile', 'Mobile', 'Mobile No.', 'password'])).trim();
+    const enrollmentNo = String(pick(['enrollmentNo', 'enrollment_no', 'enrollment', 'Enrollment No'])).trim();
+    const department = String(pick(['department', 'Institue Name', 'Institute Name', 'Allocated Nodal Centre']) || 'EVENT').trim() || 'EVENT';
+    const yearRaw = Number(pick(['year', 'Year']) || 1);
     const year = Number.isInteger(yearRaw) && yearRaw >= 1 && yearRaw <= 4 ? yearRaw : 1;
-    const studentTypeRaw = String(row.studentType || row.student_type || 'DAY_SCHOLAR').trim().toUpperCase();
+    const studentTypeRaw = String(pick(['studentType', 'student_type', 'Participant Type', 'Team Leader/ Team Member/Mentor', 'Team Name- Team Id-Participant Type']) || 'DAY_SCHOLAR').trim().toUpperCase();
     const studentType = STUDENT_TYPES.has(studentTypeRaw) ? studentTypeRaw : 'DAY_SCHOLAR';
 
     if (!fullName) {
