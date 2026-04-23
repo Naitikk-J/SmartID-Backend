@@ -314,11 +314,12 @@ const updateStudentSchema = createStudentSchema.partial();
 // ── GET / — List students ───────────────────────────────────
 router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
-        const { dept, year, search, page = 1, limit = 100, type } = req.query;
+        const { dept, year, search, page = 1, limit = 100, type, userType } = req.query;
         const where = {};
         if (dept) where.department = dept;
         if (year) where.year = parseInt(year);
         if (type) where.studentType = type;
+        if (userType) where.userType = userType;
         if (search) {
             where.OR = [
                 { fullName: { contains: search, mode: 'insensitive' } },
@@ -729,6 +730,61 @@ router.post('/:id/face-register', authenticate, validate(faceRegisterSchema), as
                     qualityScore: Math.round(faceData.qualityScore),
                     captureCount: faceData.faceImages?.length || 0,
                 },
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /by-type — Segregated student listing for apps ──────
+router.get('/by-type', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'FACULTY', 'WARDEN', 'SECURITY_GUARD'), async (req, res, next) => {
+    try {
+        const { userType = 'COLLEGE_STUDENT', page = '1', limit = '50', search, department, year } = req.query;
+        const where = {};
+        
+        if (userType === 'COLLEGE_STUDENT') {
+            where.userType = 'COLLEGE_STUDENT';
+        } else if (userType === 'EVENT_PARTICIPANT') {
+            where.userType = 'EVENT_PARTICIPANT';
+        } else if (userType === 'EXTERNAL_USER') {
+            where.userType = 'EXTERNAL_USER';
+        }
+        
+        if (department) where.department = department;
+        if (year) where.year = parseInt(year, 10);
+        if (search) {
+            where.OR = [
+                { fullName: { contains: search, mode: 'insensitive' } },
+                { enrollmentNo: { contains: search, mode: 'insensitive' } },
+                { email: { contains: search, mode: 'insensitive' } },
+            ];
+        }
+        
+        const [students, total] = await Promise.all([
+            prisma.student.findMany({
+                where,
+                skip: (parseInt(page) - 1) * parseInt(limit),
+                take: parseInt(limit),
+                orderBy: { fullName: 'asc' },
+                select: {
+                    id: true, fullName: true, enrollmentNo: true, email: true,
+                    phone: true, department: true, year: true, section: true,
+                    studentType: true, userType: true, photoUrl: true, isActive: true,
+                    roomNo: true, allottedNo: true,
+                },
+            }),
+            prisma.student.count({ where }),
+        ]);
+        
+        res.json({
+            success: true,
+            data: {
+                students,
+                total,
+                page: parseInt(page),
+                pages: Math.ceil(total / parseInt(limit)),
+                userType: userType === 'ALL' ? 'ALL' : userType,
             },
         });
     } catch (err) {

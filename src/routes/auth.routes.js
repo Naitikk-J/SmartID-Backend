@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const { z } = require('zod');
 const config = require('../config/env');
 const prisma = require('../config/database');
+const { OAuth2Client } = require('google-auth-library');
 const { authenticate, redis } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
 const { loginRateLimit } = require('../middleware/rateLimit');
@@ -69,6 +70,8 @@ function generateTokens(user) {
         role: user.role,
         department: user.department,
         module: user.module,
+        userType: user.userType,
+        appAccess: user.appAccess,
     };
     const accessToken = jwt.sign(payload, config.JWT_SECRET, { expiresIn: config.JWT_EXPIRES_IN });
     const refreshToken = jwt.sign({ id: user.id, type: 'refresh' }, config.JWT_SECRET, {
@@ -335,9 +338,9 @@ async function assertStudentDeviceBindingAllowed({ student, email, deviceContext
             studentId: student.id,
             studentEmail: student.email || email,
             enrollmentNo: student.enrollmentNo || null,
-            action: 'LOGIN_BLOCKED_STUDENT_LINKED_TO_OTHER_DEVICE',
+            action: 'LOGIN BLOCKED STUDENT LINKED TO OTHER DEVICE',
             status: 'BLOCKED',
-            reason: 'STUDENT_ALREADY_LINKED_TO_OTHER_DEVICE',
+            reason: 'STUDENT ALREADY LINKED TO OTHER DEVICE',
             deviceId: deviceContext.deviceId,
             deviceLabel: deviceContext.deviceLabel,
             devicePlatform: deviceContext.devicePlatform,
@@ -374,9 +377,9 @@ async function assertStudentDeviceBindingAllowed({ student, email, deviceContext
             studentId: student.id,
             studentEmail: student.email || email,
             enrollmentNo: student.enrollmentNo || null,
-            action: 'LOGIN_BLOCKED_DEVICE_LINKED_TO_OTHER_STUDENT',
+            action: 'LOGIN BLOCKED DEVICE LINKED TO OTHER STUDENT',
             status: 'BLOCKED',
-            reason: 'DEVICE_ALREADY_LINKED',
+            reason: 'DEVICE ALREADY LINKED',
             deviceId: deviceContext.deviceId,
             deviceLabel: deviceContext.deviceLabel,
             devicePlatform: deviceContext.devicePlatform,
@@ -451,6 +454,13 @@ function mapStudentUserResponse(student) {
         module: null,
         studentType: student.studentType,
         enrollmentNo: student.enrollmentNo,
+        userType: student.userType,
+        appAccess: student.userType === 'EXTERNAL_USER' ? 'EVENT_ONLY' : 'FULL',
+        photoUrl: student.photoUrl || null,
+        phone: student.phone || null,
+        bloodGroup: student.bloodGroup || null,
+        year: student.year || null,
+        section: student.section || null,
         linkedDeviceId: student.linkedDeviceId || null,
         linkedDeviceLabel: student.linkedDeviceLabel || null,
         linkedDevicePlatform: student.linkedDevicePlatform || null,
@@ -1159,6 +1169,200 @@ router.get('/student/auth-logs', authenticate, async (req, res, next) => {
             success: true,
             data: {
                 logs,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+const googleOAuthSchema = z.object({
+    idToken: z.string().min(1, 'Google ID Token required'),
+    deviceId: z.string().trim().min(6).max(128).optional(),
+    deviceLabel: z.string().trim().max(120).optional(),
+    devicePlatform: z.string().trim().max(40).optional(),
+});
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '370233274408-ubv6hi020gqc8r8uarqikcnbcbeb78i3.apps.googleusercontent.com';
+const ALLOWED_STUDENT_DOMAIN = 'mitsgwl.ac.in';
+const ALLOWED_ADMIN_DOMAIN = 'mitsgwalior.in';
+const SUPER_ADMIN_EMAIL = 'REDACTED';
+
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+// ── POST /google ───────────────────────────────────────────
+router.post('/google', loginRateLimit, validate(googleOAuthSchema), async (req, res, next) => {
+    try {
+        assertAuthRuntimeConfig();
+        const { idToken } = req.body;
+        const deviceContext = resolveDeviceContext(req);
+        const ipAddress = resolveClientIp(req);
+
+        // Verify Google ID token
+        const ticket = await googleClient.verifyIdToken({
+            idToken,
+            audience: GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        if (!payload?.email) {
+            throw new AppError('Google account email is missing.', 400, 'GOOGLE_EMAIL_MISSING');
+        }
+
+        if (!payload.email_verified) {
+            throw new AppError('Google email is not verified.', 403, 'GOOGLE_EMAIL_NOT_VERIFIED');
+        }
+
+        const email = String(payload.email).trim().toLowerCase();
+        const fallbackDomain = email.includes('@') ? email.split('@')[1] : '';
+        const hd = String(payload.hd || fallbackDomain).trim().toLowerCase();
+
+        let userType = null;
+        let appAccess = 'FULL';
+        if (email === SUPER_ADMIN_EMAIL) {
+            userType = 'SUPER_ADMIN';
+        } else if (hd === ALLOWED_STUDENT_DOMAIN) {
+            userType = 'STUDENT';
+        } else if (hd === ALLOWED_ADMIN_DOMAIN) {
+            userType = 'ADMIN';
+        } else {
+            // External user - event only access
+            userType = 'EXTERNAL';
+            appAccess = 'EVENT_ONLY';
+        }
+
+        let user;
+        let isStudent = userType === 'STUDENT' || userType === 'EXTERNAL';
+        let isSuperAdmin = userType === 'SUPER_ADMIN';
+        let isExternal = userType === 'EXTERNAL';
+
+        if (isSuperAdmin || userType === 'ADMIN') {
+            const role = isSuperAdmin ? 'SUPER_ADMIN' : 'FACULTY';
+            user = await prisma.adminUser.upsert({
+                where: { email },
+                update: {
+                    role,
+                    name: payload.name || email,
+                    // Keep super-admin account usable even if it was previously deactivated.
+                    ...(isSuperAdmin ? { isActive: true } : {}),
+                },
+                create: {
+                    email,
+                    name: payload.name || email,
+                    role,
+                    passwordHash: '',
+                },
+            });
+            if (!user.isActive) {
+                throw new AppError('Account is deactivated', 401, 'ACCOUNT_INACTIVE');
+            }
+            await prisma.adminUser.update({
+                where: { id: user.id },
+                data: { lastLogin: new Date() },
+            });
+        } else {
+            // STUDENT or EXTERNAL
+            user = await prisma.student.upsert({
+                where: { email },
+                update: {
+                    googleId: payload.sub,
+                    googleEmail: email,
+                },
+                create: {
+                    email,
+                    googleId: payload.sub,
+                    googleEmail: email,
+                    fullName: payload.name || email,
+                    enrollmentNo: isExternal ? `EXT-${Date.now()}` : email.split('@')[0].toUpperCase(),
+                    department: isExternal ? 'EXTERNAL' : 'UNKNOWN',
+                    year: isExternal ? 0 : 1,
+                    studentType: 'DAY_SCHOLAR',
+                    userType: isExternal ? 'EXTERNAL_USER' : 'COLLEGE_STUDENT',
+                    isActive: true,
+                },
+            });
+
+            if (!user.isActive) {
+                await createStudentAuthLogSafe({
+                    studentId: user.id,
+                    studentEmail: user.email,
+                    enrollmentNo: user.enrollmentNo,
+                    action: 'LOGIN_FAILURE',
+                    status: 'FAILED',
+                    reason: 'ACCOUNT_INACTIVE',
+                    deviceId: deviceContext.deviceId,
+                    deviceLabel: deviceContext.deviceLabel,
+                    devicePlatform: deviceContext.devicePlatform,
+                    ipAddress,
+                    userAgent: deviceContext.userAgent,
+                });
+                throw new AppError('Account is deactivated', 401, 'ACCOUNT_INACTIVE');
+            }
+
+            await assertStudentDeviceBindingAllowed({
+                student: user,
+                email,
+                deviceContext,
+                ipAddress,
+            });
+            user = await updateStudentDeviceOnLogin(user, deviceContext);
+        }
+
+        const tokenUser = isStudent ? {
+            id: user.id,
+            email: user.email,
+            role: 'STUDENT',
+            department: user.department,
+            module: null,
+            userType: user.userType,
+            appAccess,
+        } : {
+            ...user,
+            userType: user.userType || 'ADMIN_USER',
+            appAccess: 'FULL',
+        };
+
+        const tokens = generateTokens(tokenUser);
+
+        if (isStudent) {
+            await createStudentAuthLogSafe({
+                studentId: user.id,
+                studentEmail: user.email,
+                enrollmentNo: user.enrollmentNo,
+                action: 'LOGIN_SUCCESS',
+                status: 'SUCCESS',
+                deviceId: deviceContext.deviceId,
+                deviceLabel: deviceContext.deviceLabel,
+                devicePlatform: deviceContext.devicePlatform,
+                ipAddress,
+                userAgent: deviceContext.userAgent,
+            });
+        } else {
+            await logAction(req, {
+                action: 'LOGIN_SUCCESS',
+                entity: 'AdminUser',
+                entityId: user.id,
+                userId: user.id
+            }).catch(() => { });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                ...tokens,
+                user: {
+                    ...(isStudent ? mapStudentUserResponse(user) : {
+                        id: user.id,
+                        name: user.name,
+                        email: user.email,
+                        role: user.role,
+                        department: user.department,
+                        module: user.module || null,
+                        gateId: user.gateId || null,
+                        userType: 'ADMIN_USER',
+                        appAccess: 'FULL',
+                    }),
+                    isStudent,
+                },
             },
         });
     } catch (err) {

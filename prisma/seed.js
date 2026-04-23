@@ -26,7 +26,12 @@ async function main() {
     await prisma.exitEvent.deleteMany({});
     await prisma.scanEvent.deleteMany({});
     await prisma.exitRule.deleteMany({});
+    await prisma.eventMealScan.deleteMany({});
+    await prisma.eventStayScan.deleteMany({});
+    await prisma.eventParticipant.deleteMany({});
+    await prisma.eventMessRule.deleteMany({});
     await prisma.campusEvent.deleteMany({});
+    await prisma.pinkSlip.deleteMany({});
     await prisma.gate.deleteMany({});
     await prisma.card.deleteMany({});
     await prisma.adminUser.deleteMany({});
@@ -70,11 +75,13 @@ async function main() {
     // 5. Sample Students with Cards
     const students = [
         { enrollment: '0101CS221002', name: 'Ananya Sharma', type: 'HOSTELLER_GIRLS', dept: 'CSE', phone: '9000000002' },
+        { enrollment: '0101CS221033', name: 'Sneha Verma', type: 'HOSTELLER_GIRLS', dept: 'CSE', phone: '9000000006' },
         { enrollment: '0101IT221045', name: 'Rahul Kumar', type: 'HOSTELLER_BOYS', dept: 'IT', phone: '9000000003' },
         { enrollment: '0101EC221012', name: 'Priya Singh', type: 'HOSTELLER_GIRLS', dept: 'EC', phone: '9000000004' },
         { enrollment: '0101ME221023', name: 'Arjun Patel', type: 'HOSTELLER_BOYS', dept: 'ME', phone: '9000000005' },
     ];
 
+    const createdStudents = [];
     for (const s of students) {
         const studentPasswordHash = await bcrypt.hash(s.phone, 12);
         const student = await prisma.student.create({
@@ -95,6 +102,7 @@ async function main() {
                 },
             },
         });
+        createdStudents.push(student);
         console.log(`👨‍🎓 Student created: ${s.name}`);
     }
 
@@ -105,22 +113,53 @@ async function main() {
             name: 'Prof. Sharma',
             email: 'sharma@mits.ac.in',
             passwordHash: facultyHash,
-            role: 'DEPT_ADMIN',
+            role: 'FACULTY',
             department: 'CSE',
         },
     });
 
-    const sub1 = await prisma.subject.create({
+    const subjects = [
+        { code: 'CS201', name: 'Data Structures', department: 'CSE', semester: 3 },
+        { code: 'CS202', name: 'Algorithms', department: 'CSE', semester: 3 },
+        { code: 'CS301', name: 'Operating Systems', department: 'CSE', semester: 5 },
+    ];
+
+    const createdSubjects = [];
+    for (const sub of subjects) {
+        const created = await prisma.subject.create({
+            data: {
+                ...sub,
+                facultyId: faculty.id,
+            },
+        });
+        createdSubjects.push(created);
+    }
+
+    const cseStudents = createdStudents.filter((s) => s.department === 'CSE').map((s) => s.id);
+    const itStudents = createdStudents.filter((s) => s.department === 'IT').map((s) => s.id);
+    const cseClassList = await prisma.sessionClassList.create({
         data: {
-            code: 'CS201',
-            name: 'Data Structures',
+            name: 'CSE Year 2 - Section A',
             department: 'CSE',
-            semester: 3,
+            year: 2,
+            section: 'A',
             facultyId: faculty.id,
+            studentIds: cseStudents,
         },
     });
-    console.log('📚 Subjects & Faculty created.');
+    const itClassList = await prisma.sessionClassList.create({
+        data: {
+            name: 'IT Year 2 - Section A',
+            department: 'IT',
+            year: 2,
+            section: 'A',
+            facultyId: faculty.id,
+            studentIds: itStudents,
+        },
+    });
 
+    console.log('📚 Subjects & Faculty created.');
+    console.log('🧑‍🏫 Class lists created.');
     console.log('✅ Seeding complete!');
 }
 

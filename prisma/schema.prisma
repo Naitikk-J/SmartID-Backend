@@ -18,6 +18,12 @@ enum StudentType {
   HOSTELLER_GIRLS
 }
 
+enum UserType {
+  COLLEGE_STUDENT
+  EVENT_PARTICIPANT
+  EXTERNAL_USER
+}
+
 enum CardStatus {
   ACTIVE
   LOST
@@ -56,6 +62,11 @@ enum AttendanceMethod {
 enum AttendanceSessionStatus {
   OPEN
   CLOSED
+}
+
+enum QrMode {
+  STATIC
+  DYNAMIC
 }
 
 enum ExitDirection {
@@ -106,6 +117,7 @@ model Student {
   category        String?
   permanentAddress String?
   studentType     StudentType
+  userType        UserType     @default(COLLEGE_STUDENT)
   photoUrl        String?
   bloodGroup      String?
   allergies       String[]     @default([])
@@ -121,6 +133,8 @@ model Student {
   lastLogoutAt    DateTime?
   isActive        Boolean      @default(true)
   passwordHash    String?
+  googleId        String?
+  googleEmail     String?
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
@@ -142,6 +156,9 @@ model Student {
   eventMealScans       EventMealScan[]
 
   @@index([studentType])
+  @@index([userType])
+  @@index([googleId])
+  @@index([googleEmail])
   @@map("students")
 }
 
@@ -189,6 +206,7 @@ model AdminUser {
   approvedPinkSlips   PinkSlip[]       @relation("ApprovedPinkSlips")
   processedRebindRequests DeviceRebindRequest[] @relation("ProcessedRebindRequests")
   acknowledgedLateReturns LateReturnRequest[] @relation("AcknowledgedLateReturns")
+  classLists          SessionClassList[]
   gateId              String?      @db.ObjectId
   gate                Gate?        @relation(fields: [gateId], references: [id])
 
@@ -441,20 +459,48 @@ model TimetableSlot {
 }
 
 model AttendanceSession {
-  id              String                  @id @default(auto()) @map("_id") @db.ObjectId
-  subjectId       String                  @db.ObjectId
-  facultyId       String                  @db.ObjectId
-  status          AttendanceSessionStatus  @default(OPEN)
-  windowMinutes   Int                     @default(15)
-  startedAt       DateTime                @default(now())
-  closedAt        DateTime?
+  id                String                  @id @default(auto()) @map("_id") @db.ObjectId
+  subjectId         String                  @db.ObjectId
+  facultyId         String                  @db.ObjectId
+  status            AttendanceSessionStatus @default(OPEN)
+  windowMinutes     Int                     @default(15)
+  qrMode            QrMode                  @default(STATIC)
+  qrValiditySeconds Int                     @default(60)
+  qrToken           String?
+  qrExpiresAt       DateTime?
+  className         String?
+  classListId       String?                 @db.ObjectId
+  startedAt         DateTime                @default(now())
+  closedAt          DateTime?
 
   subject         Subject                 @relation(fields: [subjectId], references: [id])
   faculty         AdminUser               @relation(fields: [facultyId], references: [id])
+  classList       SessionClassList?       @relation(fields: [classListId], references: [id])
   records         AttendanceRecord[]
 
   @@index([facultyId, status, startedAt])
+  @@index([qrToken])
   @@map("attendance_sessions")
+}
+
+model SessionClassList {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  department  String
+  year        Int?
+  section     String?
+  studentIds  String[] @db.ObjectId
+  facultyId   String   @db.ObjectId
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  faculty     AdminUser           @relation(fields: [facultyId], references: [id])
+  sessions    AttendanceSession[]
+
+  @@index([facultyId])
+  @@index([department, year])
+  @@map("session_class_lists")
 }
 
 model AttendanceRecord {

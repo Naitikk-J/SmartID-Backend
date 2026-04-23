@@ -102,6 +102,8 @@ const authenticate = async (req, res, next) => {
             role: decoded.role,
             department: decoded.department,
             module: decoded.module,
+            userType: decoded.userType,
+            appAccess: decoded.appAccess,
         };
         req.token = token;
         next();
