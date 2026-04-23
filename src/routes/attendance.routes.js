@@ -34,6 +34,24 @@ const markSchema = z.object({
     gpsLng: z.union([z.string(), z.number()]).optional(),
 });
 
+const studentSessionScanSchema = z.object({
+    rawToken: z.string().min(1),
+    gpsLat: z.union([z.string(), z.number()]).optional(),
+    gpsLng: z.union([z.string(), z.number()]).optional(),
+});
+
+function parseSessionQrToken(rawToken) {
+    try {
+        const decoded = Buffer.from(String(rawToken), 'base64url').toString('utf8');
+        const payload = JSON.parse(decoded);
+        if (!payload || typeof payload !== 'object') return null;
+        if (!payload.sessionId) return null;
+        return payload;
+    } catch (_) {
+        return null;
+    }
+}
+
 const overrideSchema = z.object({
     studentId: z.string().min(1),
     reason: z.string().min(1, 'Override reason required'),
@@ -220,6 +238,90 @@ router.post('/sessions/:id/mark', authenticate, requireRole('FACULTY', 'SECURITY
             metadata: { sessionId: req.params.id },
         });
         res.json({ success: true, data: result });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── POST /sessions/scan — student scans session QR ──────────
+router.post('/sessions/scan', authenticate, requireRole('STUDENT'), validate(studentSessionScanSchema), async (req, res, next) => {
+    try {
+        const rawToken = String(req.body.rawToken || '').trim();
+        const tokenPayload = parseSessionQrToken(rawToken);
+        if (!tokenPayload?.sessionId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid attendance session QR',
+                code: 'INVALID_SESSION_QR',
+            });
+        }
+
+        const prisma = require('../config/database');
+        const session = await prisma.attendanceSession.findUnique({
+            where: { id: tokenPayload.sessionId },
+            select: {
+                id: true,
+                status: true,
+                qrToken: true,
+                qrMode: true,
+                qrExpiresAt: true,
+            },
+        });
+
+        if (!session) {
+            return res.status(404).json({
+                success: false,
+                error: 'Attendance session not found',
+                code: 'SESSION_NOT_FOUND',
+            });
+        }
+
+        if (session.status !== 'OPEN') {
+            return res.status(400).json({
+                success: false,
+                error: 'Attendance session is closed',
+                code: 'SESSION_CLOSED',
+            });
+        }
+
+        if (session.qrToken !== rawToken) {
+            return res.status(400).json({
+                success: false,
+                error: 'This QR is expired. Please scan the latest session QR.',
+                code: 'SESSION_QR_EXPIRED',
+            });
+        }
+
+        if (session.qrMode === 'DYNAMIC' && session.qrExpiresAt && new Date() > session.qrExpiresAt) {
+            return res.status(400).json({
+                success: false,
+                error: 'This dynamic session QR has expired. Ask faculty to refresh QR.',
+                code: 'SESSION_QR_EXPIRED',
+            });
+        }
+
+        const record = await attendanceService.markAttendance({
+            sessionId: session.id,
+            studentId: req.user.id,
+            gpsLat: req.body.gpsLat,
+            gpsLng: req.body.gpsLng,
+        });
+
+        return res.json({
+            success: true,
+            data: {
+                result: 'VERIFIED',
+                badge: 'GREEN',
+                message: `Attendance marked: ${record.student.fullName}`,
+                sessionId: session.id,
+                student: {
+                    id: record.student.id,
+                    fullName: record.student.fullName,
+                    enrollmentNo: record.student.enrollmentNo,
+                    photoUrl: record.student.photoUrl,
+                },
+            },
+        });
     } catch (err) {
         next(err);
     }
