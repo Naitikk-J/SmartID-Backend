@@ -1,6 +1,6 @@
 
 
-// CRUD, card management, health profile, scan history
+// CRUD, card management, health profile, 
 
 const express = require('express');
 const { z } = require('zod');
