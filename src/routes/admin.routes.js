@@ -924,4 +924,64 @@ router.get('/hosteller-insights', authenticate, requireRole('SUPER_ADMIN', 'HOD'
     }
 });
 
+router.patch('/users/:id', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { role, module, department } = req.body;
+        const updateData = {};
+        if (role) updateData.role = role;
+        if (module !== undefined) updateData.module = module || null;
+        if (department !== undefined) updateData.department = department || null;
+
+        const user = await prisma.adminUser.update({
+            where: { id },
+            data: updateData,
+            select: { id: true, name: true, email: true, role: true, module: true, department: true, isActive: true },
+        });
+        res.json({ success: true, data: { user } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+router.post('/users/assign-role', authenticate, requireRole('SUPER_ADMIN'), async (req, res, next) => {
+    try {
+        const { email, role, module, department } = req.body;
+        if (!email || !role) {
+            return res.status(400).json({ success: false, error: 'Email and role are required' });
+        }
+
+        const existingUser = await prisma.adminUser.findUnique({ where: { email } });
+        if (!existingUser) {
+            const newUser = await prisma.adminUser.create({
+                data: {
+                    email,
+                    name: email.split('@')[0],
+                    passwordHash: 'google-auth-placeholder',
+                    role,
+                    module: module || null,
+                    department: department || null,
+                    isActive: true,
+                },
+                select: { id: true, name: true, email: true, role: true, module: true, department: true, isActive: true },
+            });
+            return res.json({ success: true, data: { user: newUser, created: true } });
+        }
+
+        const updated = await prisma.adminUser.update({
+            where: { email },
+            data: {
+                role,
+                module: module || null,
+                department: department || null,
+                isActive: true,
+            },
+            select: { id: true, name: true, email: true, role: true, module: true, department: true, isActive: true },
+        });
+        res.json({ success: true, data: { user: updated, created: false } });
+    } catch (err) {
+        next(err);
+    }
+});
+
 module.exports = router;

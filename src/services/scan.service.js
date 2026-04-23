@@ -10,6 +10,29 @@ const attendanceService = require('./attendance.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
 const logger = require('../config/logger');
 
+// ── Geofencing config ───────────────────────────────────────
+const CAMPUS_CENTER_LAT = parseFloat(process.env.CAMPUS_LAT || '26.2183');
+const CAMPUS_CENTER_LNG = parseFloat(process.env.CAMPUS_LNG || '78.1828');
+const CAMPUS_RADIUS_METRES = parseInt(process.env.CAMPUS_RADIUS_METRES || '500', 10);
+const ATTENDANCE_GEOFENCE_RADIUS = parseInt(process.env.ATTENDANCE_RADIUS_METRES || '200', 10);
+
+function haversineDistance(lat1, lng1, lat2, lng2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return 6371000 * c; // Earth radius in metres
+}
+
+function checkGeofence(gpsLat, gpsLng, centerLat, centerLng, radiusMetres) {
+    if (gpsLat == null || gpsLng == null) return { inside: true, distance: null };
+    const distance = haversineDistance(parseFloat(gpsLat), parseFloat(gpsLng), centerLat, centerLng);
+    return { inside: distance <= radiusMetres, distance: Math.round(distance) };
+}
+
 // Badge colour mapping
 const BADGE_MAP = {
     VERIFIED: 'GREEN',
@@ -145,6 +168,31 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                 result: 'INACTIVE',
             });
             return buildResult('INACTIVE', student, event);
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // Step 2.6: Geofencing check for ALL scan types
+        // ─────────────────────────────────────────────────────────
+        const geofenceResult = checkGeofence(gpsLat, gpsLng, CAMPUS_CENTER_LAT, CAMPUS_CENTER_LNG, CAMPUS_RADIUS_METRES);
+        if (!geofenceResult.inside) {
+            const event = await logScanEvent({
+                studentId: student.id,
+                cardId: card.id,
+                scannedById: operatorId,
+                scanType,
+                gateId,
+                gpsLat,
+                gpsLng,
+                result: 'GPS_FAIL',
+                metadata: {
+                    reason: 'Outside campus geofence',
+                    distance: geofenceResult.distance,
+                    campusRadius: CAMPUS_RADIUS_METRES,
+                },
+            });
+            return buildResult('GPS_FAIL', student, event, {
+                message: `Geofencing failed: ${geofenceResult.distance}m from campus (max ${CAMPUS_RADIUS_METRES}m)`,
+            });
         }
 
         // ─────────────────────────────────────────────────────────
@@ -437,6 +485,65 @@ async function logScanEvent({ studentId, cardId, scannedById, scanType, gateId, 
     return prisma.scanEvent.create({ data });
 }
 
+/**
+ * Calculate distance between two GPS coordinates using Haversine formula
+ */
+function calculateDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371000; // Earth radius in meters
+    const toRad = (deg) => (deg * Math.PI) / 180;
+
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+}
+
+/**
+ * Validate geofencing for scan location
+ */
+function validateGeofence(gpsLat, gpsLng, allowedLocations = []) {
+    if (!gpsLat || !gpsLng) {
+        return { valid: true, message: 'No GPS data provided' };
+    }
+
+    const lat = parseFloat(gpsLat);
+    const lng = parseFloat(gpsLng);
+
+    if (isNaN(lat) || isNaN(lng)) {
+        return { valid: false, message: 'Invalid GPS coordinates' };
+    }
+
+    // If no geofencing configured, allow
+    if (!allowedLocations || allowedLocations.length === 0) {
+        return { valid: true, message: 'Geofencing not configured' };
+    }
+
+    for (const location of allowedLocations) {
+        const distance = calculateDistance(
+            lat,
+            lng,
+            parseFloat(location.lat),
+            parseFloat(location.lng)
+        );
+
+        if (distance <= (location.radius || 100)) {
+            return {
+                valid: true,
+                message: `Within range: ${Math.round(distance)}m from ${location.name}`,
+                distance,
+                locationName: location.name,
+            };
+        }
+    }
+
+    return { valid: false, message: 'GPS check failed: Outside allowed location' };
+}
+
 function buildResult(result, student, scanEvent, extra = {}) {
     const safeExtra = extra || {};
     const isReentry = result.startsWith('REENTERED_');
@@ -450,14 +557,18 @@ function buildResult(result, student, scanEvent, extra = {}) {
                 id: student.id,
                 fullName: student.fullName,
                 enrollmentNo: student.enrollmentNo,
+                email: student.email,
                 photoUrl: student.photoUrl,
                 department: student.department,
                 year: student.year,
+                section: student.section,
                 bloodGroup: student.bloodGroup,
                 studentType: student.studentType,
+                userType: student.userType,
             }
             : null,
         scanEventId: scanEvent?.id?.toString(),
+        scannedAt: scanEvent?.scannedAt,
         message: safeExtra.message || result,
         ...safeExtra,
     };
@@ -609,4 +720,11 @@ async function exportScans({ date }) {
     }
 }
 
-module.exports = { verifyScan, getRecentScans, exportScans };
+module.exports = {
+    verifyScan,
+    getRecentScans,
+    exportScans,
+    calculateDistance,
+    validateGeofence,
+    buildResult,
+};

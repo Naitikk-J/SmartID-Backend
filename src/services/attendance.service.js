@@ -1,10 +1,11 @@
 // ═══════════════════════════════════════════════════════════════
 // MITS Smart ID — Attendance Service
-// Session management, GPS validation, Haversine formula
+// Session management, GPS validation, Haversine formula, QR modes
 // ═══════════════════════════════════════════════════════════════
 
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const crypto = require('crypto');
 
 const EARTH_RADIUS = 6371000; // metres
 
@@ -24,24 +25,134 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 }
 
 /**
- * Start a new attendance session.
+ * Generate QR token for session.
  */
-async function startSession({ subjectId, facultyId }) {
+function generateSessionQrToken(sessionId, mode, validitySeconds) {
+    const timestamp = Date.now();
+    const random = crypto.randomBytes(16).toString('hex');
+    const expiresAt = mode === 'DYNAMIC' ? new Date(timestamp + validitySeconds * 1000) : null;
+    const tokenData = { sessionId, timestamp, random, mode, expiresAt };
+    return {
+        token: Buffer.from(JSON.stringify(tokenData)).toString('base64url'),
+        expiresAt,
+    };
+}
+
+/**
+ * Start a new attendance session with QR configuration.
+ */
+async function startSession({ subjectId, facultyId, role = 'FACULTY', className, classListId, qrMode = 'STATIC', qrValiditySeconds = 60, windowMinutes = 15 }) {
     const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
     if (!subject) {
         throw new AppError('Subject not found', 404, 'NOT_FOUND');
     }
-    if (subject.facultyId !== facultyId) {
+    if (role !== 'SUPER_ADMIN' && subject.facultyId !== facultyId) {
         throw new AppError('You are not the faculty for this subject', 403, 'FORBIDDEN');
     }
 
-    return prisma.attendanceSession.create({
+    // Create session first to get ID
+    const session = await prisma.attendanceSession.create({
         data: {
             subjectId,
             facultyId,
             status: 'OPEN',
+            windowMinutes,
+            qrMode,
+            qrValiditySeconds,
+            className,
+            classListId,
         },
     });
+
+    // Generate QR token
+    const { token, expiresAt } = generateSessionQrToken(session.id, qrMode, qrValiditySeconds);
+
+    // Update session with QR token
+    return prisma.attendanceSession.update({
+        where: { id: session.id },
+        data: { qrToken: token, qrExpiresAt: expiresAt },
+        include: {
+            subject: true,
+            classList: { include: { faculty: { select: { id: true, name: true } } } },
+        },
+    });
+}
+
+/**
+ * Refresh QR token for dynamic mode.
+ */
+async function refreshSessionQr(sessionId, facultyId) {
+    const session = await prisma.attendanceSession.findUnique({ where: { id: sessionId } });
+    if (!session) {
+        throw new AppError('Session not found', 404, 'NOT_FOUND');
+    }
+    if (session.facultyId !== facultyId) {
+        throw new AppError('Not authorized', 403, 'FORBIDDEN');
+    }
+    if (session.qrMode !== 'DYNAMIC') {
+        throw new AppError('QR refresh only available for dynamic mode', 400, 'INVALID_MODE');
+    }
+    if (session.status !== 'OPEN') {
+        throw new AppError('Session is closed', 400, 'SESSION_CLOSED');
+    }
+
+    const { token, expiresAt } = generateSessionQrToken(session.id, 'DYNAMIC', session.qrValiditySeconds);
+
+    return prisma.attendanceSession.update({
+        where: { id: sessionId },
+        data: { qrToken: token, qrExpiresAt: expiresAt },
+        include: { subject: true },
+    });
+}
+
+/**
+ * Get session with marked/unmarked student lists.
+ */
+async function getSessionWithAttendance(sessionId) {
+    const session = await prisma.attendanceSession.findUnique({
+        where: { id: sessionId },
+        include: {
+            subject: true,
+            classList: true,
+            records: {
+                include: {
+                    student: { select: { id: true, fullName: true, enrollmentNo: true, photoUrl: true, email: true, department: true, year: true } },
+                },
+                orderBy: { markedAt: 'desc' },
+            },
+        },
+    });
+
+    if (!session) {
+        throw new AppError('Session not found', 404, 'NOT_FOUND');
+    }
+
+    // Get all students in class list if available
+    let allStudents = [];
+    if (session.classList && session.classList.studentIds.length > 0) {
+        allStudents = await prisma.student.findMany({
+            where: { id: { in: session.classList.studentIds } },
+            select: { id: true, fullName: true, enrollmentNo: true, photoUrl: true, email: true, department: true, year: true },
+        });
+    }
+
+    const markedStudentIds = new Set(session.records.map((r) => r.studentId));
+    const marked = session.records.map((r) => ({
+        ...r.student,
+        markedAt: r.markedAt,
+        method: r.method,
+    }));
+    const unmarked = allStudents.filter((s) => !markedStudentIds.has(s.id));
+
+    return {
+        ...session,
+        id: session.id.toString(),
+        marked,
+        unmarked,
+        totalStudents: allStudents.length,
+        presentCount: marked.length,
+        absentCount: unmarked.length,
+    };
 }
 
 /**
@@ -252,11 +363,210 @@ async function getDefaulters(threshold = 75) {
     }));
 }
 
+/**
+ * Unmark attendance for a student in a session.
+ */
+async function unmarkAttendance({ sessionId, studentId, overrideById, overrideReason }) {
+    const session = await prisma.attendanceSession.findUnique({
+        where: { id: sessionId },
+    });
+
+    if (!session) {
+        throw new AppError('Session not found', 404, 'NOT_FOUND');
+    }
+    if (session.status !== 'OPEN') {
+        throw new AppError('Session is closed', 400, 'SESSION_CLOSED');
+    }
+
+    const record = await prisma.attendanceRecord.findUnique({
+        where: { sessionId_studentId: { sessionId, studentId } },
+    });
+
+    if (!record) {
+        throw new AppError('Attendance record not found', 404, 'NOT_FOUND');
+    }
+
+    // Delete the record
+    await prisma.attendanceRecord.delete({
+        where: { id: record.id },
+    });
+
+    return { success: true, message: 'Attendance unmarked' };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Class List Management
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Create a new class list for a faculty.
+ */
+async function createClassList({ name, department, year, section, facultyId, studentIds }) {
+    // Verify all students exist and belong to the specified department/year
+    const students = await prisma.student.findMany({
+        where: {
+            id: { in: studentIds },
+            department,
+            year,
+        },
+        select: { id: true },
+    });
+
+    const foundIds = students.map((s) => s.id);
+    const notFound = studentIds.filter((id) => !foundIds.includes(id));
+
+    if (notFound.length > 0) {
+        throw new AppError(
+            `Some students not found or don't match department/year: ${notFound.length} students`,
+            400,
+            'INVALID_STUDENTS'
+        );
+    }
+
+    return prisma.sessionClassList.create({
+        data: {
+            name,
+            department,
+            year,
+            section,
+            facultyId,
+            studentIds: foundIds,
+        },
+    });
+}
+
+/**
+ * Get all class lists for a faculty.
+ */
+async function getClassLists(userId, { department, year } = {}, role = 'FACULTY') {
+    const where = { isActive: true };
+    if (role === 'FACULTY') {
+        where.facultyId = userId;
+    }
+    if (department) where.department = department;
+    if (year) where.year = parseInt(year);
+
+    const classLists = await prisma.sessionClassList.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+    });
+
+    // Add studentCount to each class list
+    return classLists.map(list => ({
+        ...list,
+        studentCount: list.studentIds?.length || 0,
+    }));
+}
+
+/**
+ * Get a single class list with student details.
+ */
+async function getClassListWithStudents(classListId, facultyId) {
+    const classList = await prisma.sessionClassList.findFirst({
+        where: { id: classListId, facultyId },
+    });
+
+    if (!classList) {
+        throw new AppError('Class list not found', 404, 'NOT_FOUND');
+    }
+
+    const students = await prisma.student.findMany({
+        where: { id: { in: classList.studentIds } },
+        select: {
+            id: true,
+            fullName: true,
+            enrollmentNo: true,
+            email: true,
+            photoUrl: true,
+            department: true,
+            year: true,
+            section: true,
+        },
+        orderBy: { fullName: 'asc' },
+    });
+
+    return {
+        ...classList,
+        students,
+        studentCount: students.length,
+    };
+}
+
+/**
+ * Update a class list.
+ */
+async function updateClassList(classListId, facultyId, { name, studentIds, isActive }) {
+    const classList = await prisma.sessionClassList.findFirst({
+        where: { id: classListId, facultyId },
+    });
+
+    if (!classList) {
+        throw new AppError('Class list not found', 404, 'NOT_FOUND');
+    }
+
+    const data = {};
+    if (name !== undefined) data.name = name;
+    if (isActive !== undefined) data.isActive = isActive;
+
+    if (studentIds !== undefined) {
+        // Verify all students exist
+        const students = await prisma.student.findMany({
+            where: { id: { in: studentIds } },
+            select: { id: true },
+        });
+        data.studentIds = students.map((s) => s.id);
+    }
+
+    return prisma.sessionClassList.update({
+        where: { id: classListId },
+        data,
+    });
+}
+
+/**
+ * Delete a class list.
+ */
+async function deleteClassList(classListId, facultyId) {
+    const classList = await prisma.sessionClassList.findFirst({
+        where: { id: classListId, facultyId },
+    });
+
+    if (!classList) {
+        throw new AppError('Class list not found', 404, 'NOT_FOUND');
+    }
+
+    // Check if class list is used in any sessions
+    const sessionsUsing = await prisma.attendanceSession.count({
+        where: { classListId },
+    });
+
+    if (sessionsUsing > 0) {
+        // Soft delete - mark as inactive
+        return prisma.sessionClassList.update({
+            where: { id: classListId },
+            data: { isActive: false },
+        });
+    }
+
+    return prisma.sessionClassList.delete({
+        where: { id: classListId },
+    });
+}
+
 module.exports = {
     haversineDistance,
+    generateSessionQrToken,
     startSession,
+    refreshSessionQr,
+    getSessionWithAttendance,
     markAttendance,
+    unmarkAttendance,
     closeSession,
     getAttendanceReport,
     getDefaulters,
+    createClassList,
+    getClassLists,
+    getClassListWithStudents,
+    updateClassList,
+    deleteClassList,
 };
