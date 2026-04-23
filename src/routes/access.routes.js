@@ -13,6 +13,14 @@ const { createAccessQrToken, verifyAccessQrToken } = require('../services/access
 
 const router = express.Router();
 
+function isEventOnlyStudent(user) {
+    if (!user) return false;
+    if (String(user.role || '').toUpperCase() !== 'STUDENT') return false;
+    const appAccess = String(user.appAccess || '').toUpperCase();
+    const userType = String(user.userType || '').toUpperCase();
+    return appAccess === 'EVENT_ONLY' || userType === 'EXTERNAL_USER';
+}
+
 // Redis client with connection timeout (prevents hanging on first request)
 let redis = null;
 let redisInitAttempted = false;
@@ -493,6 +501,14 @@ router.post(
     validate(accessScanSchema),
     async (req, res, next) => {
         try {
+            if (isEventOnlyStudent(req.user)) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'This account is limited to event registration and event scanning only.',
+                    code: 'EVENT_ONLY_ACCESS_RESTRICTED',
+                });
+            }
+
             const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
             const latitude = Number(req.body.latitude);
             const longitude = Number(req.body.longitude);

@@ -16,6 +16,14 @@ const { AppError } = require('../middleware/errorHandler');
 const router = express.Router();
 const MONGODB_OBJECT_ID_REGEX = /^[a-f\d]{24}$/i;
 
+function isEventOnlyStudent(user) {
+    if (!user) return false;
+    if (String(user.role || '').toUpperCase() !== 'STUDENT') return false;
+    const appAccess = String(user.appAccess || '').toUpperCase();
+    const userType = String(user.userType || '').toUpperCase();
+    return appAccess === 'EVENT_ONLY' || userType === 'EXTERNAL_USER';
+}
+
 function resolveDirectionFromScanEvent(scanEvent) {
     const metadataDirection = scanEvent?.metadata?.direction;
     if (metadataDirection === 'ENTRY' || metadataDirection === 'EXIT') {
@@ -56,6 +64,14 @@ router.post(
     validate(verifyScanSchema),
     async (req, res, next) => {
         try {
+            if (isEventOnlyStudent(req.user)) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'This account is limited to event registration and event scanning only.',
+                    code: 'EVENT_ONLY_ACCESS_RESTRICTED',
+                });
+            }
+
             const result = await scanService.verifyScan({
                 rawToken: req.body.rawToken,
                 gpsLat: req.body.gpsLat,

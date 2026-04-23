@@ -29,6 +29,12 @@ const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS
 const SCAN_IDEMPOTENCY_WINDOW_MS = 5 * 1000;
 const SCAN_COOLDOWN_WINDOW_MS = 300 * 1000;
 const activeScanIdempotencyLocks = new Map();
+const CAMPUS_CENTER_LAT = parseFloat(process.env.CAMPUS_LAT || '26.2183');
+const CAMPUS_CENTER_LNG = parseFloat(process.env.CAMPUS_LNG || '78.1828');
+const EVENT_SCAN_GEOFENCE_RADIUS_METRES = Number.parseInt(
+    process.env.EVENT_SCAN_RADIUS_METRES || process.env.CAMPUS_RADIUS_METRES || '500',
+    10,
+);
 
 const nullableIntField = (min, max) => z.preprocess((value) => {
     if (value === null || value === undefined || value === '') return value;
@@ -168,6 +174,20 @@ function computeCooldownRemainingSeconds(previousTime, currentTime = new Date())
     const elapsedMs = Math.max(nowMs - previousTime.getTime(), 0);
     const remainingMs = Math.max(SCAN_COOLDOWN_WINDOW_MS - elapsedMs, 0);
     return Math.ceil(remainingMs / 1000);
+}
+
+function haversineDistanceMeters(from, to) {
+    const earthRadius = 6371000;
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const dLat = toRad(to.lat - from.lat);
+    const dLng = toRad(to.lng - from.lng);
+
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+        + Math.cos(toRad(from.lat)) * Math.cos(toRad(to.lat))
+        * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return earthRadius * c;
 }
 
 async function createEventStudentAuthLogSafe({
@@ -1264,6 +1284,46 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         const latitude = Number(req.body.latitude);
         const longitude = Number(req.body.longitude);
         const accuracy = Number(req.body.accuracy);
+
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+            return res.status(400).json({
+                success: false,
+                data: {
+                    result: 'GPS_REQUIRED',
+                    badge: 'RED',
+                    message: 'Location is required for event scanning.',
+                },
+            });
+        }
+
+        const eventScanDistance = haversineDistanceMeters(
+            { lat: CAMPUS_CENTER_LAT, lng: CAMPUS_CENTER_LNG },
+            { lat: latitude, lng: longitude },
+        );
+        const effectiveEventRadius = Math.max(100, EVENT_SCAN_GEOFENCE_RADIUS_METRES);
+        if (eventScanDistance > effectiveEventRadius) {
+            await createEventStudentAuthLogSafe({
+                studentId: req.user.id,
+                studentEmail: req.user.email,
+                action: 'EVENT_SCAN_GEOFENCE_FAIL',
+                status: 'FAILED',
+                reason: 'OUTSIDE_CAMPUS_GEOFENCE',
+                metadata: {
+                    distance: Math.round(eventScanDistance),
+                    radius: effectiveEventRadius,
+                    accuracy: Number.isFinite(accuracy) ? accuracy : null,
+                },
+            });
+
+            return res.status(403).json({
+                success: false,
+                data: {
+                    result: 'GPS_FAIL',
+                    badge: 'RED',
+                    message: `Outside campus geofence (${Math.round(eventScanDistance)}m / ${effectiveEventRadius}m).`,
+                },
+            });
+        }
 
         const verification = verifyEventQrToken(qrToken);
         if (!verification.valid) {
