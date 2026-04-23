@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
+
 // MITS Smart ID — Student Routes
 // CRUD, card management, health profile, scan history
 
