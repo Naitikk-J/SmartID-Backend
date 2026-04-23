@@ -44,6 +44,7 @@ let pinkSlipRoutes;
 let alertRoutes;
 let curfewRoutes;
 let lateReturnRoutes;
+let geofencingRoutes;
 
 try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
 try { scanRoutes = require('./routes/scan.routes'); } catch (err) { scanRoutes = routeFallback('scan', err); }
@@ -61,6 +62,7 @@ try { pinkSlipRoutes = require('./routes/pink-slip.routes'); } catch (err) { pin
 try { alertRoutes = require('./routes/alerts.routes'); } catch (err) { alertRoutes = routeFallback('alerts', err); }
 try { curfewRoutes = require('./routes/curfew.routes'); } catch (err) { curfewRoutes = routeFallback('curfew', err); }
 try { lateReturnRoutes = require('./routes/late-return.routes'); } catch (err) { lateReturnRoutes = routeFallback('late-return', err); }
+try { geofencingRoutes = require('./routes/geofencing.routes'); } catch (err) { geofencingRoutes = routeFallback('geofencing', err); }
 
 
 const app = express();
@@ -150,6 +152,7 @@ app.use('/api/v1/qr', qrRoutes);
 app.use('/api/v1/alerts', alertRoutes);
 app.use('/api/v1/rules/curfew', curfewRoutes);
 app.use('/api/v1/late-return', lateReturnRoutes);
+app.use('/api/v1/geofencing', geofencingRoutes);
 
 // ── 8. 404 handler ──────────────────────────────────────────
 app.all('*', (req, res, next) => {

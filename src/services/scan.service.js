@@ -9,12 +9,7 @@ const exitService = require('./exit.service');
 const attendanceService = require('./attendance.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
 const logger = require('../config/logger');
-
-// ── Geofencing config ───────────────────────────────────────
-const CAMPUS_CENTER_LAT = parseFloat(process.env.CAMPUS_LAT || '26.2183');
-const CAMPUS_CENTER_LNG = parseFloat(process.env.CAMPUS_LNG || '78.1828');
-const CAMPUS_RADIUS_METRES = parseInt(process.env.CAMPUS_RADIUS_METRES || '500', 10);
-const ATTENDANCE_GEOFENCE_RADIUS = parseInt(process.env.ATTENDANCE_RADIUS_METRES || '200', 10);
+const { getGeofencingSettings } = require('./geofencing-settings.service');
 
 function haversineDistance(lat1, lng1, lat2, lng2) {
     const toRad = (deg) => (deg * Math.PI) / 180;
@@ -173,7 +168,14 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
         // ─────────────────────────────────────────────────────────
         // Step 2.6: Geofencing check for ALL scan types
         // ─────────────────────────────────────────────────────────
-        const geofenceResult = checkGeofence(gpsLat, gpsLng, CAMPUS_CENTER_LAT, CAMPUS_CENTER_LNG, CAMPUS_RADIUS_METRES);
+        const geofencingSettings = getGeofencingSettings();
+        const geofenceResult = checkGeofence(
+            gpsLat,
+            gpsLng,
+            geofencingSettings.campusCenterLat,
+            geofencingSettings.campusCenterLng,
+            geofencingSettings.campusRadiusMetres,
+        );
         if (!geofenceResult.inside) {
             const event = await logScanEvent({
                 studentId: student.id,
@@ -187,11 +189,11 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                 metadata: {
                     reason: 'Outside campus geofence',
                     distance: geofenceResult.distance,
-                    campusRadius: CAMPUS_RADIUS_METRES,
+                    campusRadius: geofencingSettings.campusRadiusMetres,
                 },
             });
             return buildResult('GPS_FAIL', student, event, {
-                message: `Geofencing failed: ${geofenceResult.distance}m from campus (max ${CAMPUS_RADIUS_METRES}m)`,
+                message: `Geofencing failed: ${geofenceResult.distance}m from campus (max ${geofencingSettings.campusRadiusMetres}m)`,
             });
         }
 

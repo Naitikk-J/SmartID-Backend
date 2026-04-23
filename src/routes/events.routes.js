@@ -21,6 +21,7 @@ const {
     buildEventDailyCsv,
     sendDailyEventReportForEvent,
 } = require('../services/eventReports.service');
+const { getGeofencingSettings } = require('../services/geofencing-settings.service');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -29,12 +30,6 @@ const STUDENT_TYPES = new Set(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS
 const SCAN_IDEMPOTENCY_WINDOW_MS = 5 * 1000;
 const SCAN_COOLDOWN_WINDOW_MS = 300 * 1000;
 const activeScanIdempotencyLocks = new Map();
-const CAMPUS_CENTER_LAT = parseFloat(process.env.CAMPUS_LAT || '26.2183');
-const CAMPUS_CENTER_LNG = parseFloat(process.env.CAMPUS_LNG || '78.1828');
-const EVENT_SCAN_GEOFENCE_RADIUS_METRES = Number.parseInt(
-    process.env.EVENT_SCAN_RADIUS_METRES || process.env.CAMPUS_RADIUS_METRES || '500',
-    10,
-);
 
 const nullableIntField = (min, max) => z.preprocess((value) => {
     if (value === null || value === undefined || value === '') return value;
@@ -1284,6 +1279,7 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         const latitude = Number(req.body.latitude);
         const longitude = Number(req.body.longitude);
         const accuracy = Number(req.body.accuracy);
+        const geofencingSettings = getGeofencingSettings();
 
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
             return res.status(400).json({
@@ -1297,10 +1293,13 @@ router.post('/scan', authenticate, requireRole('STUDENT'), scanRateGuard, valida
         }
 
         const eventScanDistance = haversineDistanceMeters(
-            { lat: CAMPUS_CENTER_LAT, lng: CAMPUS_CENTER_LNG },
+            {
+                lat: geofencingSettings.campusCenterLat,
+                lng: geofencingSettings.campusCenterLng,
+            },
             { lat: latitude, lng: longitude },
         );
-        const effectiveEventRadius = Math.max(100, EVENT_SCAN_GEOFENCE_RADIUS_METRES);
+        const effectiveEventRadius = Math.max(100, geofencingSettings.eventScanRadiusMetres);
         if (eventScanDistance > effectiveEventRadius) {
             await createEventStudentAuthLogSafe({
                 studentId: req.user.id,

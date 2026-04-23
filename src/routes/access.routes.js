@@ -10,6 +10,7 @@ const { scanRateLimit } = require('../middleware/rateLimit');
 const faceAiService = require('../services/faceAi.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
 const { createAccessQrToken, verifyAccessQrToken } = require('../services/accessQrToken.service');
+const { getGeofencingSettings } = require('../services/geofencing-settings.service');
 
 const router = express.Router();
 
@@ -54,12 +55,7 @@ function getRedis() {
     return redis;
 }
 
-const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
-const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
-    ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
-    : 30;
 const ACCESS_REQUIRE_FACE = String(process.env.ACCESS_REQUIRE_FACE || 'false').toLowerCase() === 'true';
-const ACCESS_REQUIRE_GEOFENCE = String(config.ACCESS_REQUIRE_GEOFENCE || 'false').toLowerCase() === 'true';
 
 const geoSchema = z.object({
     gateId: z.string().min(1),
@@ -244,6 +240,7 @@ async function resolveGate(gateRef) {
 async function generateGateQr(gateId, createdById) {
     const gate = await resolveGate(gateId);
     if (!gate) return null;
+    const geofencingSettings = getGeofencingSettings();
 
     const gateGeofence = parseGeofence(gate.location);
 
@@ -251,7 +248,7 @@ async function generateGateQr(gateId, createdById) {
         gateId: gate.id,
         gateName: gate.name,
         createdById,
-        ttlSeconds: QR_TTL_SECONDS,
+        ttlSeconds: geofencingSettings.accessQrTtlSeconds,
         geofence: gateGeofence,
     });
 
@@ -260,7 +257,7 @@ async function generateGateQr(gateId, createdById) {
         gateId: gate.id,
         gateName: gate.name,
         expiresAt: qr.expiresAt,
-        ttlSeconds: QR_TTL_SECONDS,
+        ttlSeconds: geofencingSettings.accessQrTtlSeconds,
     };
 }
 
@@ -624,12 +621,13 @@ router.post(
             let geofenceEffectiveRadius = null;
             let geofenceConfiguredRadius = null;
             let geofenceGpsMarginMeters = null;
+            const geofencingSettings = getGeofencingSettings();
 
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(accuracy)) {
                 geoStatus = 'FAIL';
                 failureReason = 'GPS_MISSING';
             } else if (!geofence) {
-                if (ACCESS_REQUIRE_GEOFENCE) {
+                if (geofencingSettings.accessRequireGeofence) {
                     geoStatus = 'FAIL';
                     failureReason = 'GEOFENCE_NOT_CONFIGURED';
                 } else {
@@ -763,7 +761,7 @@ router.post(
                                 requested_event_type: requestedEventType,
                                 student_name: req.user.email,
                                 qr_source: qrSource,
-                                geofence_required: ACCESS_REQUIRE_GEOFENCE,
+                                geofence_required: geofencingSettings.accessRequireGeofence,
                                 geofence_distance_m: geofenceDistanceMeters,
                                 geofence_effective_radius_m: geofenceEffectiveRadius,
                                 geofence_configured_radius_m: geofenceConfiguredRadius,

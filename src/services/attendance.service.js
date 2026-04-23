@@ -6,6 +6,7 @@
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
 const crypto = require('crypto');
+const { getGeofencingSettings } = require('./geofencing-settings.service');
 
 const EARTH_RADIUS = 6371000; // metres
 
@@ -183,23 +184,22 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
             throw new AppError('Attendance window has expired', 400, 'TIME_EXPIRED');
         }
 
-        // GPS check — find the timetable slot for this session
-        if (gpsLat != null && gpsLng != null && session.subject.timetableSlots.length > 0) {
-            const slot = session.subject.timetableSlots[0]; // Use first matching slot
-            if (slot.gpsLat != null && slot.gpsLng != null) {
-                const distance = haversineDistance(
-                    parseFloat(gpsLat),
-                    parseFloat(gpsLng),
-                    parseFloat(slot.gpsLat),
-                    parseFloat(slot.gpsLng)
+        // GPS check — use global attendance geofencing settings
+        if (gpsLat != null && gpsLng != null) {
+            const geofencingSettings = getGeofencingSettings();
+            const distance = haversineDistance(
+                parseFloat(gpsLat),
+                parseFloat(gpsLng),
+                geofencingSettings.campusCenterLat,
+                geofencingSettings.campusCenterLng,
+            );
+
+            if (distance > geofencingSettings.attendanceRadiusMetres) {
+                throw new AppError(
+                    `GPS check failed: you are ${Math.round(distance)}m from campus center (max ${geofencingSettings.attendanceRadiusMetres}m for attendance)`,
+                    400,
+                    'GPS_FAIL'
                 );
-                if (distance > slot.gpsRadiusMetres) {
-                    throw new AppError(
-                        `GPS check failed: you are ${Math.round(distance)}m from the classroom (max ${slot.gpsRadiusMetres}m)`,
-                        400,
-                        'GPS_FAIL'
-                    );
-                }
             }
         }
     }

@@ -1,16 +1,11 @@
 const express = require('express');
 const { authenticate, requireRole } = require('../middleware/auth');
 
-const config = require('../config/env');
 const prisma = require('../config/database');
 const { createAccessQrToken } = require('../services/accessQrToken.service');
+const { getGeofencingSettings } = require('../services/geofencing-settings.service');
 
 const router = express.Router();
-
-const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
-const QR_TTL_SECONDS = Number.isFinite(rawQrTtl)
-    ? Math.min(120, Math.max(15, Math.round(rawQrTtl)))
-    : 30;
 
 function parseGeofence(locationValue) {
     if (!locationValue) return null;
@@ -89,6 +84,7 @@ router.get(
             if (!gate) {
                 return res.status(404).json({ success: false, error: 'Gate not found' });
             }
+            const geofencingSettings = getGeofencingSettings();
 
             const gateGeofence = parseGeofence(gate.location);
 
@@ -96,7 +92,7 @@ router.get(
                 gateId: gate.id,
                 gateName: gate.name,
                 createdById: req.user.id,
-                ttlSeconds: QR_TTL_SECONDS,
+                ttlSeconds: geofencingSettings.accessQrTtlSeconds,
                 geofence: gateGeofence,
             });
 
@@ -107,7 +103,7 @@ router.get(
                     gate_name: gate.name,
                     qr_token: qr.token,
                     expires_at: qr.expiresAt.toISOString(),
-                    ttl_seconds: QR_TTL_SECONDS,
+                    ttl_seconds: geofencingSettings.accessQrTtlSeconds,
                 },
             });
         } catch (err) {
