@@ -187,7 +187,10 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
         // GPS check — use global attendance geofencing settings
         if (gpsLat != null && gpsLng != null) {
             const geofencingSettings = getGeofencingSettings();
-            const effectiveAttendanceRadius = geofencingSettings.campusRadiusMetres;
+            const effectiveAttendanceRadius = Math.max(
+                geofencingSettings.campusRadiusMetres,
+                geofencingSettings.attendanceRadiusMetres,
+            ) + 50;
             const distance = haversineDistance(
                 parseFloat(gpsLat),
                 parseFloat(gpsLng),
