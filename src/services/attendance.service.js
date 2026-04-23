@@ -187,6 +187,7 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
         // GPS check — use global attendance geofencing settings
         if (gpsLat != null && gpsLng != null) {
             const geofencingSettings = getGeofencingSettings();
+            const effectiveAttendanceRadius = geofencingSettings.campusRadiusMetres;
             const distance = haversineDistance(
                 parseFloat(gpsLat),
                 parseFloat(gpsLng),
@@ -194,9 +195,9 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
                 geofencingSettings.campusCenterLng,
             );
 
-            if (distance > geofencingSettings.attendanceRadiusMetres) {
+            if (distance > effectiveAttendanceRadius) {
                 throw new AppError(
-                    `GPS check failed: you are ${Math.round(distance)}m from campus center (max ${geofencingSettings.attendanceRadiusMetres}m for attendance)`,
+                    `GPS check failed: you are ${Math.round(distance)}m from campus center (max ${effectiveAttendanceRadius}m)`,
                     400,
                     'GPS_FAIL'
                 );
