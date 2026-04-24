@@ -132,7 +132,8 @@ app.use((req, res, next) => {
 
 // ── 6. Health check ─────────────────────────────────────────
 app.get(['/health', '/api/v1/health'], (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    const { getGeofencingSettings } = require('./services/geofencing-settings.service');
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), geofencing: getGeofencingSettings() });
 });
 
 // ── 7. Mount routes ─────────────────────────────────────────
