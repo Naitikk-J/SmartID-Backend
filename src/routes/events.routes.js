@@ -855,7 +855,7 @@ router.post('/:id/register', authenticate, requireRole('STUDENT'), async (req, r
                 enrollmentNo: student.enrollmentNo,
                 fullName: student.fullName,
                 email: student.email,
-                phone: student.phone,
+                phone: student.phone || '',
                 loginId: student.email,
                 isActive: true
             }
