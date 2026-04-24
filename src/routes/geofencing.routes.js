@@ -14,9 +14,9 @@ const router = express.Router();
 const updateGeofencingSchema = z.object({
     campusCenterLat: z.number().min(-90).max(90).optional(),
     campusCenterLng: z.number().min(-180).max(180).optional(),
-    campusRadiusMetres: z.number().min(100).max(5000).optional(),
-    attendanceRadiusMetres: z.number().min(20).max(2000).optional(),
-    eventScanRadiusMetres: z.number().min(100).max(5000).optional(),
+    campusRadiusMetres: z.number().min(100).max(50000).optional(),
+    attendanceRadiusMetres: z.number().min(20).max(50000).optional(),
+    eventScanRadiusMetres: z.number().min(100).max(50000).optional(),
     accessQrTtlSeconds: z.number().int().min(15).max(120).optional(),
     accessRequireGeofence: z.boolean().optional(),
 }).refine((payload) => Object.keys(payload).length > 0, {

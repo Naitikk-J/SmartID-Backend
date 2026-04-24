@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const config = require('../config/env');
 
 function toFiniteNumber(value, fallback) {
@@ -17,15 +19,16 @@ function clamp(value, min, max) {
 
 const rawQrTtl = Number(config.ACCESS_QR_TTL_SECONDS);
 
-const state = {
+// Default initial state from ENV
+const initialState = {
     campusCenterLat: toFiniteNumber(process.env.CAMPUS_LAT, 26.2183),
     campusCenterLng: toFiniteNumber(process.env.CAMPUS_LNG, 78.1828),
-    campusRadiusMetres: clamp(toFiniteNumber(process.env.CAMPUS_RADIUS_METRES, 500), 100, 5000),
-    attendanceRadiusMetres: clamp(toFiniteNumber(process.env.ATTENDANCE_RADIUS_METRES, 200), 20, 2000),
+    campusRadiusMetres: clamp(toFiniteNumber(process.env.CAMPUS_RADIUS_METRES, 500), 100, 50000),
+    attendanceRadiusMetres: clamp(toFiniteNumber(process.env.ATTENDANCE_RADIUS_METRES, 200), 20, 50000),
     eventScanRadiusMetres: clamp(
         toFiniteNumber(process.env.EVENT_SCAN_RADIUS_METRES, toFiniteNumber(process.env.CAMPUS_RADIUS_METRES, 500)),
         100,
-        5000,
+        50000,
     ),
     accessQrTtlSeconds: Number.isFinite(rawQrTtl)
         ? clamp(Math.round(rawQrTtl), 15, 120)
@@ -33,6 +36,36 @@ const state = {
     accessRequireGeofence: toBoolean(config.ACCESS_REQUIRE_GEOFENCE, false),
     updatedAt: null,
 };
+
+const SETTINGS_FILE = path.join(__dirname, '../../data/geofencing.json');
+
+let state = { ...initialState };
+
+function loadState() {
+    try {
+        if (fs.existsSync(SETTINGS_FILE)) {
+            const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
+            const savedState = JSON.parse(data);
+            state = { ...state, ...savedState };
+        }
+    } catch (e) {
+        console.error('Failed to load geofencing settings:', e);
+    }
+}
+
+function saveState() {
+    try {
+        if (!fs.existsSync(path.dirname(SETTINGS_FILE))) {
+            fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
+        }
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(state, null, 2), 'utf8');
+    } catch (e) {
+        console.error('Failed to save geofencing settings:', e);
+    }
+}
+
+// Load initial state on startup
+loadState();
 
 function getGeofencingSettings() {
     return { ...state };
@@ -48,15 +81,15 @@ function updateGeofencingSettings(patch = {}) {
     }
 
     if (patch.campusRadiusMetres !== undefined) {
-        state.campusRadiusMetres = clamp(Number(patch.campusRadiusMetres), 100, 5000);
+        state.campusRadiusMetres = clamp(Number(patch.campusRadiusMetres), 100, 50000);
     }
 
     if (patch.attendanceRadiusMetres !== undefined) {
-        state.attendanceRadiusMetres = clamp(Number(patch.attendanceRadiusMetres), 20, 2000);
+        state.attendanceRadiusMetres = clamp(Number(patch.attendanceRadiusMetres), 20, 50000);
     }
 
     if (patch.eventScanRadiusMetres !== undefined) {
-        state.eventScanRadiusMetres = clamp(Number(patch.eventScanRadiusMetres), 100, 5000);
+        state.eventScanRadiusMetres = clamp(Number(patch.eventScanRadiusMetres), 100, 50000);
     }
 
     if (patch.accessQrTtlSeconds !== undefined) {
@@ -68,6 +101,10 @@ function updateGeofencingSettings(patch = {}) {
     }
 
     state.updatedAt = new Date().toISOString();
+    
+    // Persist changes
+    saveState();
+    
     return getGeofencingSettings();
 }
 
