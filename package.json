@@ -4,7 +4,7 @@
     "description": "MITS Smart ID Card Management System — Backend API",
     "main": "src/server.js",
     "scripts": {
-        "dev": "nodemon src/server.js",
+        "dev": "nodemon --ignore data/ src/server.js",
         "start": "node src/server.js",
         "test": "jest --runInBand",
         "test:unit": "jest tests/unit --coverage",
