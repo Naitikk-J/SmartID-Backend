@@ -726,6 +726,166 @@ function extractParticipantsFromPdfText(pdfText) {
     return deduped;
 }
 
+// ── STUDENT ENDPOINTS ───────────────────────────────────────
+
+// GET /upcoming — List upcoming active events
+router.get('/upcoming', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const events = await prisma.campusEvent.findMany({
+            where: {
+                isActive: true,
+                endTime: { gt: new Date() }
+            },
+            orderBy: { startTime: 'asc' },
+            select: {
+                id: true,
+                name: true,
+                description: true,
+                eventDate: true,
+                startTime: true,
+                endTime: true,
+                hostelGateLabel: true,
+                _count: {
+                    select: { participants: true }
+                }
+            }
+        });
+
+        const formatted = events.map(e => ({
+            id: e.id,
+            name: e.name,
+            description: e.description,
+            startDate: e.startTime,
+            endDate: e.endTime,
+            venue: e.hostelGateLabel || 'Campus',
+            participantCount: e._count.participants,
+            maxParticipants: null
+        }));
+
+        res.json({ success: true, data: { events: formatted } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /my-registrations — List events the student is registered for
+router.get('/my-registrations', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const registrations = await prisma.eventParticipant.findMany({
+            where: { 
+                studentId: req.user.id,
+                isActive: true
+            },
+            include: {
+                event: {
+                    select: {
+                        id: true,
+                        name: true,
+                        description: true,
+                        startTime: true,
+                        endTime: true,
+                        hostelGateLabel: true,
+                    }
+                }
+            }
+        });
+
+        const formatted = registrations.map(reg => ({
+            id: reg.id,
+            eventId: reg.eventId,
+            status: 'REGISTERED',
+            registrationDate: reg.createdAt,
+            event: {
+                id: reg.event.id,
+                name: reg.event.name,
+                description: reg.event.description,
+                startDate: reg.event.startTime,
+                endDate: reg.event.endTime,
+                venue: reg.event.hostelGateLabel || 'Campus'
+            }
+        }));
+
+        res.json({ success: true, data: { registrations: formatted } });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /:id/register — Self-register for an event
+router.post('/:id/register', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const eventId = req.params.id;
+        const studentId = req.user.id;
+
+        const event = await prisma.campusEvent.findUnique({ where: { id: eventId } });
+        if (!event || !event.isActive) {
+            throw new AppError('Event not found or inactive', 404);
+        }
+        if (new Date(event.endTime) < new Date()) {
+            throw new AppError('Cannot register for a past event', 400);
+        }
+
+        const student = await prisma.student.findUnique({ where: { id: studentId } });
+
+        const existing = await prisma.eventParticipant.findFirst({
+            where: { eventId, studentId }
+        });
+
+        if (existing) {
+            if (!existing.isActive) {
+                await prisma.eventParticipant.update({
+                    where: { id: existing.id },
+                    data: { isActive: true }
+                });
+                return res.json({ success: true, message: 'Registration restored' });
+            }
+            throw new AppError('Already registered', 400);
+        }
+
+        await prisma.eventParticipant.create({
+            data: {
+                eventId,
+                studentId,
+                enrollmentNo: student.enrollmentNo,
+                fullName: student.fullName,
+                email: student.email,
+                phone: student.phone,
+                loginId: student.email,
+                isActive: true
+            }
+        });
+
+        res.json({ success: true, message: 'Successfully registered' });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /:id/cancel — Cancel registration
+router.post('/:id/cancel', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const eventId = req.params.id;
+        const studentId = req.user.id;
+
+        const existing = await prisma.eventParticipant.findFirst({
+            where: { eventId, studentId, isActive: true }
+        });
+
+        if (!existing) {
+            throw new AppError('Registration not found', 404);
+        }
+
+        await prisma.eventParticipant.update({
+            where: { id: existing.id },
+            data: { isActive: false }
+        });
+
+        res.json({ success: true, message: 'Registration cancelled' });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── GET / — List all events ─────────────────────────────────
 router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
