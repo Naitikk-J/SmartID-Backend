@@ -30,14 +30,14 @@ const manualMarkSchema = z.object({
 
 const markSchema = z.object({
     rawToken: z.string().min(1),
-    gpsLat: z.union([z.string(), z.number()]).optional(),
-    gpsLng: z.union([z.string(), z.number()]).optional(),
+    gpsLat: z.union([z.string(), z.number()]).nullish(),
+    gpsLng: z.union([z.string(), z.number()]).nullish(),
 });
 
 const studentSessionScanSchema = z.object({
     rawToken: z.string().min(1),
-    gpsLat: z.union([z.string(), z.number()]).optional(),
-    gpsLng: z.union([z.string(), z.number()]).optional(),
+    gpsLat: z.union([z.string(), z.number()]).nullish(),
+    gpsLng: z.union([z.string(), z.number()]).nullish(),
 });
 
 function parseSessionQrToken(rawToken) {
