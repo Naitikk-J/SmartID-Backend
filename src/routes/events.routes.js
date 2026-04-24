@@ -731,10 +731,16 @@ function extractParticipantsFromPdfText(pdfText) {
 // GET /upcoming — List upcoming active events
 router.get('/upcoming', authenticate, requireRole('STUDENT'), async (req, res, next) => {
     try {
+        const student = await prisma.student.findUnique({ where: { id: req.user.id } });
+        const dept = student?.department || '';
+
         const events = await prisma.campusEvent.findMany({
             where: {
                 isActive: true,
-                endTime: { gt: new Date() }
+                endTime: { gt: new Date() },
+                appliesTo: {
+                    hasSome: ['ALL', dept]
+                }
             },
             orderBy: { startTime: 'asc' },
             select: {
