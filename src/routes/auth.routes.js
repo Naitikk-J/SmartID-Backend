@@ -825,11 +825,28 @@ router.get('/me', authenticate, async (req, res, next) => {
                     department: true,
                     studentType: true,
                     enrollmentNo: true,
+                    year: true,
+                    section: true,
+                    phone: true,
+                    photoUrl: true,
+                    bloodGroup: true,
+                    fatherName: true,
                     linkedDeviceId: true,
                     linkedDeviceLabel: true,
                     linkedDevicePlatform: true,
                     deviceLinkedAt: true,
                     lastLoginAt: true,
+                    cards: {
+                        where: { status: 'ACTIVE' },
+                        take: 1,
+                        select: {
+                            id: true,
+                            cardUid: true,
+                            qrToken: true,
+                            status: true,
+                            issuedAt: true,
+                        },
+                    },
                 },
             });
 
@@ -837,10 +854,15 @@ router.get('/me', authenticate, async (req, res, next) => {
                 throw new AppError('Student account not found', 404, 'STUDENT_NOT_FOUND');
             }
 
+            // Extract active card and merge into response
+            const activeCard = student.cards?.[0] || null;
+            const { cards, ...studentData } = student;
+
             return res.json({
                 success: true,
                 data: {
-                    user: mapStudentUserResponse(student),
+                    user: mapStudentUserResponse(studentData),
+                    card: activeCard,
                 },
             });
         }
