@@ -450,6 +450,7 @@ function mapStudentUserResponse(student) {
     return {
         id: student.id,
         name: student.fullName,
+        fullName: student.fullName,
         email: student.email,
         role: 'STUDENT',
         department: student.department,
@@ -461,6 +462,7 @@ function mapStudentUserResponse(student) {
         photoUrl: student.photoUrl || null,
         phone: student.phone || null,
         bloodGroup: student.bloodGroup || null,
+        fatherName: student.fatherName || null,
         year: student.year || null,
         section: student.section || null,
         linkedDeviceId: student.linkedDeviceId || null,
