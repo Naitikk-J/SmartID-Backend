@@ -893,6 +893,50 @@ router.get('/me', authenticate, async (req, res, next) => {
     }
 });
 
+// ── PATCH /me ─────────────────────────────────────────────────
+const updateSelfSchema = z.object({
+    phone: z.string().optional(),
+    fatherName: z.string().optional(),
+    bloodGroup: z.string().optional(),
+    department: z.string().optional(),
+    year: z.number().int().optional(),
+    section: z.string().optional(),
+    photoUrl: z.string().url().optional().or(z.literal('')),
+    emergencyName: z.string().optional(),
+    emergencyPhone: z.string().optional(),
+    permanentAddress: z.string().optional(),
+});
+
+router.patch('/me', authenticate, validate(updateSelfSchema), async (req, res, next) => {
+    try {
+        if (req.user.role !== 'STUDENT') {
+            throw new AppError('Only students can update their profile through this endpoint', 403, 'FORBIDDEN');
+        }
+
+        // Filter out undefined and empty string values appropriately
+        const dataToUpdate = {};
+        for (const [key, value] of Object.entries(req.body)) {
+            if (value !== undefined) {
+                dataToUpdate[key] = value;
+            }
+        }
+
+        const updatedStudent = await prisma.student.update({
+            where: { id: req.user.id },
+            data: dataToUpdate,
+        });
+
+        res.json({
+            success: true,
+            data: {
+                user: mapStudentUserResponse(updatedStudent),
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── POST /rebind-request — Login page request (email + reason) ──
 router.post('/rebind-request', loginRateLimit, validate(loginRebindRequestSchema), async (req, res, next) => {
     try {
