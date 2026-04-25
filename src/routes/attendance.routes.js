@@ -77,6 +77,7 @@ router.get('/subjects', authenticate, requireRole('FACULTY', 'HOD', 'SUPER_ADMIN
 });
 
 // ── GET /sessions ───────────────────────────────────────────
+// FACULTY only sees their own sessions; HOD/SUPER_ADMIN see all
 router.get('/sessions', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', 'HOD', 'SUPER_ADMIN'), async (req, res, next) => {
     try {
         const prisma = require('../config/database');
@@ -84,16 +85,25 @@ router.get('/sessions', authenticate, requireRole('FACULTY', 'SECURITY_GUARD', '
         if (req.query.status) {
             where.status = req.query.status;
         }
-        if (req.query.facultyId) {
+        // Faculty can only see their own sessions
+        if (req.user.role === 'FACULTY') {
+            where.facultyId = req.user.id;
+        } else if (req.query.facultyId) {
             where.facultyId = req.query.facultyId;
         }
+
+        // Auto-expire stale open sessions before returning results
+        await attendanceService.autoExpireStaleSessions();
+
         const sessions = await prisma.attendanceSession.findMany({
             where,
             include: {
                 subject: { select: { id: true, code: true, name: true, department: true } },
+                faculty: { select: { id: true, name: true, email: true } },
                 _count: { select: { records: true } },
             },
             orderBy: { startedAt: 'desc' },
+            take: req.query.limit ? parseInt(req.query.limit) : 50,
         });
 
         // Fetch class lists separately if needed
@@ -187,6 +197,117 @@ router.post('/sessions/:id/close', authenticate, requireRole('FACULTY', 'SECURIT
             entity: 'AttendanceSession',
             entityId: req.params.id
         }).catch(() => { });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── GET /sessions/:id/export ─── CSV/Excel attendance report ─
+router.get('/sessions/:id/export', authenticate, requireRole('FACULTY', 'HOD', 'SUPER_ADMIN'), async (req, res, next) => {
+    try {
+        const prisma = require('../config/database');
+        const session = await prisma.attendanceSession.findUnique({
+            where: { id: req.params.id },
+            include: {
+                subject: true,
+                faculty: { select: { name: true, email: true } },
+                classList: true,
+                records: {
+                    include: {
+                        student: {
+                            select: {
+                                id: true, fullName: true, enrollmentNo: true,
+                                email: true, department: true, year: true, section: true,
+                            },
+                        },
+                    },
+                    orderBy: { markedAt: 'asc' },
+                },
+            },
+        });
+
+        if (!session) {
+            const { AppError } = require('../middleware/errorHandler');
+            throw new AppError('Session not found', 404);
+        }
+
+        // Faculty can only export their own sessions
+        if (req.user.role === 'FACULTY' && session.facultyId !== req.user.id) {
+            const { AppError } = require('../middleware/errorHandler');
+            throw new AppError('You can only export your own sessions', 403);
+        }
+
+        // Build complete student list (from class list if available)
+        let allStudents = [];
+        if (session.classList && session.classList.studentIds.length > 0) {
+            allStudents = await prisma.student.findMany({
+                where: { id: { in: session.classList.studentIds } },
+                select: {
+                    id: true, fullName: true, enrollmentNo: true,
+                    email: true, department: true, year: true, section: true,
+                },
+                orderBy: { enrollmentNo: 'asc' },
+            });
+        }
+
+        const markedSet = new Map(session.records.map(r => [r.studentId, r]));
+
+        // Build CSV rows
+        const csvHeader = 'S.No,Enrollment No,Student Name,Department,Year,Section,Status,Marked At,Method';
+        const rows = [];
+        let sno = 1;
+
+        if (allStudents.length > 0) {
+            // Full class list with present/absent
+            for (const student of allStudents) {
+                const record = markedSet.get(student.id);
+                rows.push([
+                    sno++,
+                    student.enrollmentNo,
+                    `"${student.fullName}"`,
+                    student.department || '',
+                    student.year || '',
+                    student.section || '',
+                    record ? 'PRESENT' : 'ABSENT',
+                    record ? new Date(record.markedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '',
+                    record ? record.method : '',
+                ].join(','));
+            }
+        } else {
+            // Only marked students (no class list)
+            for (const record of session.records) {
+                rows.push([
+                    sno++,
+                    record.student.enrollmentNo,
+                    `"${record.student.fullName}"`,
+                    record.student.department || '',
+                    record.student.year || '',
+                    record.student.section || '',
+                    'PRESENT',
+                    new Date(record.markedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                    record.method,
+                ].join(','));
+            }
+        }
+
+        // Metadata header lines
+        const meta = [
+            `# Attendance Report`,
+            `# Subject: ${session.subject?.code || ''} - ${session.subject?.name || ''}`,
+            `# Class: ${session.className || 'N/A'}`,
+            `# Faculty: ${session.faculty?.name || 'N/A'}`,
+            `# Date: ${new Date(session.startedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`,
+            `# Status: ${session.status}`,
+            `# Total Present: ${session.records.length}${allStudents.length > 0 ? ' / ' + allStudents.length : ''}`,
+            '',
+        ];
+
+        const csvContent = [...meta, csvHeader, ...rows].join('\n');
+        const filename = `attendance_${session.subject?.code || 'session'}_${new Date(session.startedAt).toISOString().slice(0, 10)}.csv`;
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(csvContent);
     } catch (err) {
         next(err);
     }

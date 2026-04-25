@@ -233,6 +233,40 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
 }
 
 /**
+ * Auto-expire any OPEN sessions whose window has elapsed.
+ * Called lazily before GET /sessions so there's no cron dependency.
+ */
+async function autoExpireStaleSessions() {
+    try {
+        const openSessions = await prisma.attendanceSession.findMany({
+            where: { status: 'OPEN' },
+            select: { id: true, startedAt: true, windowMinutes: true },
+        });
+
+        const now = Date.now();
+        const staleIds = openSessions
+            .filter(s => {
+                const windowEnd = new Date(s.startedAt).getTime() + s.windowMinutes * 60 * 1000;
+                return now > windowEnd;
+            })
+            .map(s => s.id);
+
+        if (staleIds.length > 0) {
+            await prisma.attendanceSession.updateMany({
+                where: { id: { in: staleIds } },
+                data: { status: 'CLOSED', closedAt: new Date() },
+            });
+        }
+
+        return staleIds.length;
+    } catch (err) {
+        // Non-critical — log but don't throw
+        console.error('[autoExpire] Failed to auto-expire sessions:', err.message);
+        return 0;
+    }
+}
+
+/**
  * Close an attendance session.
  */
 async function closeSession(sessionId, facultyId) {
@@ -565,6 +599,7 @@ module.exports = {
     getSessionWithAttendance,
     markAttendance,
     unmarkAttendance,
+    autoExpireStaleSessions,
     closeSession,
     getAttendanceReport,
     getDefaulters,
