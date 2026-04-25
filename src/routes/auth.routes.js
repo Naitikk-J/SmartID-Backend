@@ -74,9 +74,11 @@ function generateTokens(user) {
         appAccess: user.appAccess,
     };
     const accessToken = jwt.sign(payload, config.JWT_SECRET, { expiresIn: config.JWT_EXPIRES_IN });
-    const refreshToken = jwt.sign({ id: user.id, type: 'refresh' }, config.JWT_SECRET, {
-        expiresIn: config.JWT_REFRESH_EXPIRES_IN,
-    });
+    const refreshToken = jwt.sign(
+        { id: user.id, role: user.role, type: 'refresh' },
+        config.JWT_SECRET,
+        { expiresIn: config.JWT_REFRESH_EXPIRES_IN },
+    );
     return { accessToken, refreshToken };
 }
 
@@ -733,9 +735,22 @@ router.post('/refresh', validate(refreshSchema), async (req, res, next) => {
             throw new AppError('Invalid refresh token', 401, 'INVALID_TOKEN');
         }
 
-        const user = await prisma.adminUser.findUnique({ where: { id: decoded.id } });
-        if (!user || !user.isActive) {
-            throw new AppError('User not found or inactive', 401, 'INVALID_TOKEN');
+        let user;
+
+        if (decoded.role === 'STUDENT') {
+            // Student refresh — look up in student table
+            const student = await prisma.student.findUnique({ where: { id: decoded.id } });
+            if (!student || !student.isActive) {
+                throw new AppError('Student not found or inactive', 401, 'INVALID_TOKEN');
+            }
+            user = mapStudentUserResponse(student);
+        } else {
+            // Admin/Faculty refresh — look up in adminUser table
+            const admin = await prisma.adminUser.findUnique({ where: { id: decoded.id } });
+            if (!admin || !admin.isActive) {
+                throw new AppError('User not found or inactive', 401, 'INVALID_TOKEN');
+            }
+            user = admin;
         }
 
         const tokens = generateTokens(user);
@@ -1237,21 +1252,39 @@ router.post('/google', loginRateLimit, validate(googleOAuthSchema), async (req, 
 
         if (isSuperAdmin || userType === 'ADMIN') {
             const role = isSuperAdmin ? 'SUPER_ADMIN' : 'FACULTY';
-            user = await prisma.adminUser.upsert({
-                where: { email },
-                update: {
-                    role,
-                    name: payload.name || email,
-                    // Keep super-admin account usable even if it was previously deactivated.
-                    ...(isSuperAdmin ? { isActive: true } : {}),
-                },
-                create: {
-                    email,
-                    name: payload.name || email,
-                    role,
-                    passwordHash: '',
-                },
-            });
+
+            if (isSuperAdmin) {
+                // SUPER_ADMIN is the only role that auto-creates (bootstrapping)
+                user = await prisma.adminUser.upsert({
+                    where: { email },
+                    update: {
+                        role,
+                        name: payload.name || email,
+                        isActive: true,
+                    },
+                    create: {
+                        email,
+                        name: payload.name || email,
+                        role,
+                        passwordHash: '',
+                    },
+                });
+            } else {
+                // Faculty/Admin must be pre-created by a SUPER_ADMIN
+                user = await prisma.adminUser.findUnique({ where: { email } });
+                if (!user) {
+                    throw new AppError(
+                        'No admin account found for this email. Contact a Super Admin to get access.',
+                        403,
+                        'ADMIN_NOT_PROVISIONED',
+                    );
+                }
+                // Update name/lastLogin on existing account
+                await prisma.adminUser.update({
+                    where: { id: user.id },
+                    data: { name: payload.name || user.name },
+                });
+            }
             if (!user.isActive) {
                 throw new AppError('Account is deactivated', 401, 'ACCOUNT_INACTIVE');
             }

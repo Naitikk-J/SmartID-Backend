@@ -13,15 +13,21 @@ const DEFAULT_AES_KEY_HEX = '000000000000000000000000000000000000000000000000000
 function resolveKey() {
     const candidate = typeof config.AES_KEY === 'string' && config.AES_KEY.trim()
         ? config.AES_KEY.trim()
-        : DEFAULT_AES_KEY_HEX;
+        : null;
 
-    const normalized = /^[0-9a-fA-F]{64}$/.test(candidate) ? candidate : DEFAULT_AES_KEY_HEX;
-
-    try {
-        return Buffer.from(normalized, 'hex');
-    } catch {
+    if (!candidate || !/^[0-9a-fA-F]{64}$/.test(candidate)) {
+        if (config.NODE_ENV === 'production') {
+            throw new Error(
+                'FATAL: AES_KEY is missing or invalid in production. '
+                + 'All QR encryption would use an insecure default key. '
+                + 'Set a valid 64-character hex AES_KEY environment variable.'
+            );
+        }
+        console.warn('⚠️ WARNING: Using insecure default AES key. Set AES_KEY env var for production.');
         return Buffer.from(DEFAULT_AES_KEY_HEX, 'hex');
     }
+
+    return Buffer.from(candidate, 'hex');
 }
 
 const KEY = resolveKey(); // 32 bytes = 256 bits
@@ -77,7 +83,7 @@ function decryptToken(token) {
  * @returns {string} card UID
  */
 function generateCardUid() {
-    return 'CRD-' + crypto.randomBytes(2).toString('hex').toUpperCase();
+    return 'CRD-' + crypto.randomBytes(6).toString('hex').toUpperCase();
 }
 
 /**

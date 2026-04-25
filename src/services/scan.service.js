@@ -23,7 +23,10 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 }
 
 function checkGeofence(gpsLat, gpsLng, centerLat, centerLng, radiusMetres) {
-    if (gpsLat == null || gpsLng == null) return { inside: true, distance: null };
+    if (gpsLat == null || gpsLng == null) {
+        // GPS disabled — do NOT silently allow. Require location for campus scans.
+        return { inside: false, distance: null, reason: 'GPS location required but not provided' };
+    }
     const distance = haversineDistance(parseFloat(gpsLat), parseFloat(gpsLng), centerLat, centerLng);
     return { inside: distance <= radiusMetres, distance: Math.round(distance) };
 }
@@ -343,16 +346,37 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
             }
 
             case 'MESS': {
-                // Check student hasn't already scanned MESS today
-                const todayEnd = new Date();
-                todayEnd.setHours(23, 59, 59, 999);
+                // Determine current meal slot based on time of day
+                const currentHour = new Date().getHours();
+                let mealSlot;
+                if (currentHour >= 6 && currentHour < 10) {
+                    mealSlot = 'BREAKFAST';
+                } else if (currentHour >= 11 && currentHour < 15) {
+                    mealSlot = 'LUNCH';
+                } else if (currentHour >= 16 && currentHour < 17) {
+                    mealSlot = 'SNACKS';
+                } else if (currentHour >= 18 && currentHour < 22) {
+                    mealSlot = 'DINNER';
+                } else {
+                    mealSlot = 'OTHER';
+                }
 
+                // Calculate the start/end of the current meal slot window
+                const slotStart = new Date();
+                const slotEnd = new Date();
+                if (mealSlot === 'BREAKFAST') { slotStart.setHours(6, 0, 0, 0); slotEnd.setHours(10, 0, 0, 0); }
+                else if (mealSlot === 'LUNCH') { slotStart.setHours(11, 0, 0, 0); slotEnd.setHours(15, 0, 0, 0); }
+                else if (mealSlot === 'SNACKS') { slotStart.setHours(16, 0, 0, 0); slotEnd.setHours(17, 0, 0, 0); }
+                else if (mealSlot === 'DINNER') { slotStart.setHours(18, 0, 0, 0); slotEnd.setHours(22, 0, 0, 0); }
+                else { slotStart.setHours(0, 0, 0, 0); slotEnd.setHours(23, 59, 59, 999); }
+
+                // Check if student already scanned for THIS meal slot
                 const messCount = await prisma.scanEvent.count({
                     where: {
                         studentId: student.id,
                         scanType: 'MESS',
                         result: 'VERIFIED',
-                        scannedAt: { gte: todayStart, lte: todayEnd },
+                        scannedAt: { gte: slotStart, lte: slotEnd },
                     },
                 });
 
@@ -366,9 +390,15 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                         gpsLat,
                         gpsLng,
                         result: 'DUPLICATE',
+                        metadata: { mealSlot },
                     });
-                    return buildResult('DUPLICATE', student, event, { message: 'Already scanned for mess today' });
+                    return buildResult('DUPLICATE', student, event, {
+                        message: `Already scanned for ${mealSlot.toLowerCase()} today`,
+                    });
                 }
+
+                // Add meal slot to metadata for the verified event
+                metadata.mealSlot = mealSlot;
                 break;
             }
 

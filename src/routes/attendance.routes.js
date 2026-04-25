@@ -624,4 +624,109 @@ router.delete('/class-lists/:id', authenticate, requireRole('FACULTY', 'HOD', 'S
     }
 });
 
+// ── GET /my-attendance ──────────────────────────────────────
+// Student-facing: returns attendance summary per subject
+router.get('/my-attendance', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+    try {
+        const prisma = require('../config/database');
+        const studentId = req.user.id;
+
+        // Get all attendance records for this student
+        const records = await prisma.attendanceRecord.findMany({
+            where: { studentId },
+            select: {
+                sessionId: true,
+                markedAt: true,
+                method: true,
+                session: {
+                    select: {
+                        id: true,
+                        status: true,
+                        startedAt: true,
+                        className: true,
+                        subject: {
+                            select: {
+                                id: true,
+                                code: true,
+                                name: true,
+                                department: true,
+                            },
+                        },
+                    },
+                },
+            },
+            orderBy: { markedAt: 'desc' },
+        });
+
+        // Get all closed sessions to compute totals per subject
+        const subjectIds = [...new Set(records.map((r) => r.session?.subject?.id).filter(Boolean))];
+        const allSessions = subjectIds.length > 0
+            ? await prisma.attendanceSession.findMany({
+                where: {
+                    subjectId: { in: subjectIds },
+                    status: 'CLOSED',
+                },
+                select: {
+                    id: true,
+                    subjectId: true,
+                },
+            })
+            : [];
+
+        // Build per-subject summary
+        const subjectMap = {};
+        for (const record of records) {
+            const subject = record.session?.subject;
+            if (!subject) continue;
+            if (!subjectMap[subject.id]) {
+                subjectMap[subject.id] = {
+                    subjectId: subject.id,
+                    subjectCode: subject.code,
+                    subjectName: subject.name,
+                    department: subject.department,
+                    present: 0,
+                    total: 0,
+                    percentage: 0,
+                    recentSessions: [],
+                };
+            }
+            subjectMap[subject.id].present++;
+            subjectMap[subject.id].recentSessions.push({
+                sessionId: record.sessionId,
+                date: record.session.startedAt,
+                className: record.session.className,
+                status: 'PRESENT',
+            });
+        }
+
+        // Fill total from all closed sessions
+        for (const session of allSessions) {
+            if (subjectMap[session.subjectId]) {
+                subjectMap[session.subjectId].total++;
+            }
+        }
+
+        // Calculate percentages
+        const subjects = Object.values(subjectMap).map((s) => ({
+            ...s,
+            percentage: s.total > 0 ? Math.round((s.present / s.total) * 100) : 100,
+            recentSessions: s.recentSessions.slice(0, 10),
+        }));
+
+        res.json({
+            success: true,
+            data: {
+                subjects,
+                totalPresent: records.length,
+                totalSessions: allSessions.length,
+                overallPercentage: allSessions.length > 0
+                    ? Math.round((records.length / allSessions.length) * 100)
+                    : 100,
+            },
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 module.exports = router;

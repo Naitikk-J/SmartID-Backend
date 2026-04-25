@@ -17,10 +17,10 @@ const scanRateLimit = rateLimit({
     legacyHeaders: false,
 });
 
-// Auth login: 100 req/15min per IP (brute force protection)
+// Auth login: 10 req/15min per IP (brute force protection)
 const loginRateLimit = rateLimit({
-    windowMs: 15 * 1000,
-    max: 100,
+    windowMs: 15 * 60 * 1000,
+    max: 10,
     message: {
         success: false,
         error: 'Too many login attempts — please try again in 15 minutes',
