@@ -3,5 +3,26 @@
     "qrMode": "DYNAMIC",
     "qrTtlSeconds": 10,
     "updatedAt": "2026-04-26T18:37:06.247Z"
+  },
+  "69ee72dc2a945abac5705bef": {
+    "qrMode": "STATIC",
+    "qrTtlSeconds": 20,
+    "validInCampus": true,
+    "validInHostel": false,
+    "updatedAt": "2026-04-26T20:31:51.872Z"
+  },
+  "69ee72f72a945abac5705bf1": {
+    "qrMode": "DYNAMIC",
+    "qrTtlSeconds": 20,
+    "validInCampus": false,
+    "validInHostel": true,
+    "updatedAt": "2026-04-26T20:25:32.143Z"
+  },
+  "69ee72e82a945abac5705bf0": {
+    "qrMode": "DYNAMIC",
+    "qrTtlSeconds": 20,
+    "validInCampus": true,
+    "validInHostel": false,
+    "updatedAt": "2026-04-26T20:25:44.444Z"
   }
 }

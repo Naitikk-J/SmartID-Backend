@@ -1,10 +1,10 @@
 {
-  "campusCenterLat": 26.227311,
-  "campusCenterLng": 78.211431,
+  "campusCenterLat": 26.227464,
+  "campusCenterLng": 78.211336,
   "campusRadiusMetres": 500,
   "attendanceRadiusMetres": 200,
   "eventScanRadiusMetres": 500,
   "accessQrTtlSeconds": 30,
   "accessRequireGeofence": true,
-  "updatedAt": "2026-04-24T07:22:58.202Z"
+  "updatedAt": "2026-04-26T20:18:39.992Z"
 }

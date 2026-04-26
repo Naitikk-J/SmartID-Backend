@@ -241,6 +241,11 @@ async function generateGateQr(gateId, createdById) {
     const gate = await resolveGate(gateId);
     if (!gate) return null;
     const geofencingSettings = getGeofencingSettings();
+    const configs = loadGateQrConfigs();
+    const gateConfig = configs[gate.id] || {};
+    
+    // Priority: Gate-specific TTL -> Global TTL
+    const ttlSeconds = gateConfig.qrTtlSeconds || geofencingSettings.accessQrTtlSeconds || 20;
 
     const gateGeofence = parseGeofence(gate.location);
 
@@ -248,7 +253,7 @@ async function generateGateQr(gateId, createdById) {
         gateId: gate.id,
         gateName: gate.name,
         createdById,
-        ttlSeconds: geofencingSettings.accessQrTtlSeconds,
+        ttlSeconds: ttlSeconds,
         geofence: gateGeofence,
     });
 
@@ -257,7 +262,7 @@ async function generateGateQr(gateId, createdById) {
         gateId: gate.id,
         gateName: gate.name,
         expiresAt: qr.expiresAt,
-        ttlSeconds: geofencingSettings.accessQrTtlSeconds,
+        ttlSeconds: ttlSeconds,
     };
 }
 
@@ -506,21 +511,7 @@ router.post(
                 });
             }
 
-            // Enforce Hosteller-only access for Live Gate Scanning for students
-            if (req.user.role === 'STUDENT') {
-                const studentData = await prisma.student.findUnique({
-                    where: { id: req.user.id },
-                    select: { studentType: true },
-                });
-                
-                if (!studentData?.studentType || !studentData.studentType.startsWith('HOSTELLER')) {
-                    return res.status(403).json({
-                        success: false,
-                        error: 'Access Denied: Live Gate scanning is restricted to registered hostellers only.',
-                        code: 'HOSTELLER_ACCESS_RESTRICTED',
-                    });
-                }
-            }
+
 
             const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
             const latitude = Number(req.body.latitude);
@@ -747,6 +738,18 @@ router.post(
                     ? `Outside geofence by ${geofenceOutsideByMeters}m. Ask admin to update gate geofence from Hosteller page.`
                     : (failureReason || 'Access denied');
 
+            const configs = loadGateQrConfigs();
+            const gateConfig = configs[gateId] || { validInCampus: true, validInHostel: true };
+
+            if (gateConfig.validInCampus === false && gateConfig.validInHostel === false) {
+                return res.status(403).json({ success: false, error: 'This gate is not active for campus or hostel scans.' });
+            }
+
+            let finalScanType = 'ACCESS_SCAN';
+            if (gateConfig.validInCampus === false && gateConfig.validInHostel === true) {
+                finalScanType = eventType === 'EXIT' ? 'GATE_EXIT' : 'GATE_ENTRY';
+            }
+
             let scanEvent = null;
             try {
                 scanEvent = await withTimeout(
@@ -754,7 +757,7 @@ router.post(
                         data: {
                             scannedById: req.user.id,
                             studentId: req.user.role === 'STUDENT' ? req.user.id : undefined,
-                            scanType: 'ACCESS_SCAN',
+                            scanType: finalScanType,
                             result: resultCode,
                             gpsLat: latitude,
                             gpsLng: longitude,
@@ -791,6 +794,22 @@ router.post(
                 );
             } catch (err) {
                 console.warn('Scan event write skipped:', err.message);
+            }
+
+            if (gateConfig.validInHostel !== false && overallPass && req.user.role === 'STUDENT') {
+                const studentRecord = await prisma.student.findUnique({ where: { id: req.user.id }, select: { studentType: true } });
+                if (studentRecord?.studentType && studentRecord.studentType.startsWith('HOSTELLER')) {
+                    const exitService = require('../services/exit.service');
+                    try {
+                        await withTimeout(
+                            exitService.recordExitEvent(req.user.id, gateId, eventType, req.user.id),
+                            2500,
+                            'Exit event write'
+                        );
+                    } catch (err) {
+                        console.warn('Hostel exit event write skipped:', err.message);
+                    }
+                }
             }
 
             if (scanEvent) {
@@ -881,9 +900,11 @@ router.put(
 
             const qrMode = ['DYNAMIC', 'STATIC'].includes(req.body.qrMode) ? req.body.qrMode : 'DYNAMIC';
             const qrTtlSeconds = Math.min(120, Math.max(10, Math.round(Number(req.body.qrTtlSeconds) || 20)));
+            const validInCampus = typeof req.body.validInCampus === 'boolean' ? req.body.validInCampus : true;
+            const validInHostel = typeof req.body.validInHostel === 'boolean' ? req.body.validInHostel : true;
 
             const configs = loadGateQrConfigs();
-            configs[req.params.id] = { qrMode, qrTtlSeconds, updatedAt: new Date().toISOString() };
+            configs[req.params.id] = { qrMode, qrTtlSeconds, validInCampus, validInHostel, updatedAt: new Date().toISOString() };
             saveGateQrConfigs(configs);
 
             return res.json({ success: true, data: configs[req.params.id] });
