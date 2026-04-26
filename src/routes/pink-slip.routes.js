@@ -82,6 +82,11 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
     try {
         const pinkSlips = await prisma.pinkSlip.findMany({
             where: { studentId: req.user.id },
+            include: {
+                approvedBy: {
+                    select: { name: true },
+                },
+            },
             orderBy: { updatedAt: 'desc' },
         });
 
