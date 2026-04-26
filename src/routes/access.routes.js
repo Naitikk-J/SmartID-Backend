@@ -835,7 +835,73 @@ router.post(
     }
 );
 
-// ── Create a new gate ──
+// ── Per-gate QR config file ──
+const QR_CONFIG_FILE = require('path').join(__dirname, '../../data/gate-qr-config.json');
+
+function loadGateQrConfigs() {
+    try {
+        if (require('fs').existsSync(QR_CONFIG_FILE)) {
+            return JSON.parse(require('fs').readFileSync(QR_CONFIG_FILE, 'utf8'));
+        }
+    } catch { /* ignore */ }
+    return {};
+}
+
+function saveGateQrConfigs(configs) {
+    try {
+        const dir = require('path').dirname(QR_CONFIG_FILE);
+        if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true });
+        require('fs').writeFileSync(QR_CONFIG_FILE, JSON.stringify(configs, null, 2), 'utf8');
+    } catch (e) { console.error('Failed to save gate QR config:', e); }
+}
+
+// GET per-gate QR config
+router.get(
+    '/gates/:id/qr-config',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD', 'FACULTY'),
+    async (req, res, next) => {
+        try {
+            const configs = loadGateQrConfigs();
+            const cfg = configs[req.params.id] || { qrMode: 'DYNAMIC', qrTtlSeconds: 20 };
+            return res.json({ success: true, data: cfg });
+        } catch (err) { next(err); }
+    }
+);
+
+// PUT per-gate QR config (override from QR Manage)
+router.put(
+    '/gates/:id/qr-config',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'),
+    async (req, res, next) => {
+        try {
+            const gate = await prisma.gate.findUnique({ where: { id: req.params.id } });
+            if (!gate) return res.status(404).json({ success: false, error: 'Gate not found' });
+
+            const qrMode = ['DYNAMIC', 'STATIC'].includes(req.body.qrMode) ? req.body.qrMode : 'DYNAMIC';
+            const qrTtlSeconds = Math.min(120, Math.max(10, Math.round(Number(req.body.qrTtlSeconds) || 20)));
+
+            const configs = loadGateQrConfigs();
+            configs[req.params.id] = { qrMode, qrTtlSeconds, updatedAt: new Date().toISOString() };
+            saveGateQrConfigs(configs);
+
+            return res.json({ success: true, data: configs[req.params.id] });
+        } catch (err) { next(err); }
+    }
+);
+
+// GET all gate QR configs at once
+router.get(
+    '/gates/qr-configs',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD', 'FACULTY'),
+    async (req, res, next) => {
+        try {
+            return res.json({ success: true, data: loadGateQrConfigs() });
+        } catch (err) { next(err); }
+    }
+);
 router.post(
     '/gates',
     authenticate,
