@@ -285,6 +285,7 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
             case 'ATTENDANCE': {
                 try {
                     let sessionId = metadata?.sessionId;
+                    let sessionObj = null;
 
                     // If no sessionId, find active session for this faculty (operatorId)
                     if (!sessionId) {
@@ -294,6 +295,7 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                                 status: 'OPEN',
                             },
                             orderBy: { startedAt: 'desc' },
+                            include: { subject: true }
                         });
 
                         if (!activeSession) {
@@ -302,6 +304,12 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                             });
                         }
                         sessionId = activeSession.id;
+                        sessionObj = activeSession;
+                    } else {
+                        sessionObj = await prisma.attendanceSession.findUnique({
+                            where: { id: sessionId },
+                            include: { subject: true }
+                        });
                     }
 
                     const record = await attendanceService.markAttendance({
@@ -322,6 +330,15 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                         result: 'VERIFIED',
                         metadata: { sessionId },
                     });
+
+                    const { sendPush } = require('./notification.service');
+                    const subjectName = sessionObj?.subject?.name || 'Class';
+                    sendPush({
+                        studentId: student.id,
+                        title: 'Attendance Marked',
+                        body: `Attendance marked for ${subjectName}.`,
+                        data: { type: 'ATTENDANCE_MARKED', sessionId }
+                    }).catch(console.error);
 
                     return buildResult('VERIFIED', student, event, {
                         message: `Attendance marked: ${record.student.fullName}`,

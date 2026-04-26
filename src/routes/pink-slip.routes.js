@@ -240,6 +240,16 @@ router.patch('/:id', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'), 
             },
         });
 
+        if (status === 'APPROVED') {
+            const { sendPush } = require('../services/notification.service');
+            sendPush({
+                studentId: pinkSlip.studentId,
+                title: 'Pink Slip Approved',
+                body: 'Your Pink Slip was approved by the Warden.',
+                data: { type: 'PINK_SLIP', action: 'APPROVED', slipId: pinkSlip.id }
+            }).catch(console.error);
+        }
+
         await logAction(req, {
             action: `PINK_SLIP_${status}`,
             entity: 'PinkSlip',

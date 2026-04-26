@@ -5,11 +5,11 @@
     "updatedAt": "2026-04-26T18:37:06.247Z"
   },
   "69ee72dc2a945abac5705bef": {
-    "qrMode": "STATIC",
+    "qrMode": "DYNAMIC",
     "qrTtlSeconds": 20,
     "validInCampus": true,
     "validInHostel": false,
-    "updatedAt": "2026-04-26T20:31:51.872Z"
+    "updatedAt": "2026-04-26T20:40:29.413Z"
   },
   "69ee72f72a945abac5705bf1": {
     "qrMode": "DYNAMIC",

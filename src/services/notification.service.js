@@ -273,8 +273,8 @@ async function scheduleHostellerCurfewAlerts() {
 
         if (minutesToCurfew > 0 && minutesToCurfew <= 30) {
             action = 'CURFEW_REMINDER_30M';
-            title = 'Curfew Reminder';
-            body = `Curfew starts in ${minutesToCurfew} minutes. Please return to hostel and mark entry.`;
+            title = 'Curfew Alert';
+            body = `Curfew Alert: You have ${minutesToCurfew} minutes to return to campus.`;
         } else if (minutesToCurfew <= 0) {
             action = 'CURFEW_CROSSED_WARNING';
             title = 'Curfew Crossed';
