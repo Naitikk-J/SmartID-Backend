@@ -835,4 +835,92 @@ router.post(
     }
 );
 
+// ── Create a new gate ──
+router.post(
+    '/gates',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'),
+    async (req, res, next) => {
+        try {
+            const name = String(req.body.name || '').trim();
+            if (!name || name.length < 2) {
+                return res.status(400).json({ success: false, error: 'Gate name is required (min 2 characters)' });
+            }
+
+            const existing = await prisma.gate.findFirst({
+                where: { name: { equals: name, mode: 'insensitive' } },
+            });
+            if (existing) {
+                return res.status(409).json({ success: false, error: 'A gate with this name already exists' });
+            }
+
+            const gate = await prisma.gate.create({
+                data: {
+                    name,
+                    isActive: true,
+                },
+            });
+
+            return res.status(201).json({
+                success: true,
+                data: {
+                    id: gate.id,
+                    name: gate.name,
+                    hasGeofence: false,
+                },
+            });
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
+// ── Rename a gate ──
+router.patch(
+    '/gates/:id',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD', 'WARDEN'),
+    async (req, res, next) => {
+        try {
+            const gateId = req.params.id;
+            const newName = String(req.body.name || '').trim();
+            if (!newName || newName.length < 2) {
+                return res.status(400).json({ success: false, error: 'New gate name is required (min 2 characters)' });
+            }
+
+            const gate = await prisma.gate.findUnique({ where: { id: gateId } });
+            if (!gate) {
+                return res.status(404).json({ success: false, error: 'Gate not found' });
+            }
+
+            // Check for duplicate name (exclude current gate)
+            const duplicate = await prisma.gate.findFirst({
+                where: {
+                    name: { equals: newName, mode: 'insensitive' },
+                    id: { not: gateId },
+                },
+            });
+            if (duplicate) {
+                return res.status(409).json({ success: false, error: 'Another gate with this name already exists' });
+            }
+
+            const updated = await prisma.gate.update({
+                where: { id: gateId },
+                data: { name: newName },
+            });
+
+            return res.json({
+                success: true,
+                data: {
+                    id: updated.id,
+                    name: updated.name,
+                    hasGeofence: Boolean(parseGeofence(updated.location)),
+                },
+            });
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
 module.exports = router;
