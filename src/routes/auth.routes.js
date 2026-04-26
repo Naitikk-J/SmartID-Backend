@@ -1301,7 +1301,12 @@ router.post('/google', loginRateLimit, validate(googleOAuthSchema), async (req, 
 
         let userType = null;
         let appAccess = 'FULL';
-        if (email === SUPER_ADMIN_EMAIL) {
+
+        const existingAdmin = await prisma.adminUser.findUnique({ where: { email } });
+
+        if (existingAdmin) {
+            userType = existingAdmin.role === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'ADMIN';
+        } else if (email === SUPER_ADMIN_EMAIL) {
             userType = 'SUPER_ADMIN';
         } else if (hd === ALLOWED_STUDENT_DOMAIN) {
             userType = 'STUDENT';
