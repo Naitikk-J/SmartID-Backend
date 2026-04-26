@@ -818,4 +818,63 @@ router.get('/by-type', authenticate, requireRole('SUPER_ADMIN', 'HOD', 'FACULTY'
     }
 });
 
+// ── Verify E-ID QR Token ──────────────────────────────────────
+router.post('/verify-qr', authenticate, requireRole('SUPER_ADMIN', 'SECURITY_GUARD', 'HOD', 'WARDEN'), async (req, res, next) => {
+    try {
+        const { qrToken } = req.body;
+        if (!qrToken) {
+            throw new AppError('QR Token is required', 400);
+        }
+
+        const { decryptToken } = require('../services/crypto.service');
+        let decoded;
+        try {
+            decoded = decryptToken(qrToken);
+        } catch (err) {
+            throw new AppError('Invalid QR Token', 400);
+        }
+
+        if (!decoded || !decoded.enrollmentNo) {
+            throw new AppError('Invalid QR Token Data', 400);
+        }
+
+        const student = await prisma.student.findUnique({
+            where: { enrollmentNo: decoded.enrollmentNo }
+        });
+
+        if (!student) {
+            throw new AppError('Student not found', 404);
+        }
+
+        // Return a safe subset of student data for the E-ID card
+        return res.json({
+            success: true,
+            data: {
+                id: student.id,
+                fullName: student.fullName,
+                enrollmentNo: student.enrollmentNo,
+                email: student.email,
+                department: student.department,
+                year: student.year,
+                studentType: student.studentType,
+                userType: student.userType,
+                photoUrl: student.photoUrl,
+                phone: student.phone,
+                fatherName: student.fatherName,
+                bloodGroup: student.bloodGroup,
+                roomNo: student.roomNo,
+                category: student.category,
+                section: student.section,
+                fatherMobile: student.fatherMobile,
+                emergencyPhone: student.emergencyPhone,
+                cardDetails: {
+                    qrToken: qrToken // echo back the token
+                }
+            }
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 module.exports = router;
