@@ -729,17 +729,20 @@ function extractParticipantsFromPdfText(pdfText) {
 // ── STUDENT ENDPOINTS ───────────────────────────────────────
 
 // GET /upcoming — List upcoming active events
-router.get('/upcoming', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+router.get('/upcoming', authenticate, async (req, res, next) => {
     try {
         const student = await prisma.student.findUnique({ where: { id: req.user.id } });
-        const dept = student?.department || '';
+        const dept = (student?.department || '').trim();
+
+        const filterDepts = ['ALL'];
+        if (dept) filterDepts.push(dept);
 
         const events = await prisma.campusEvent.findMany({
             where: {
                 isActive: true,
                 endTime: { gt: new Date() },
                 appliesTo: {
-                    hasSome: ['ALL', dept]
+                    hasSome: filterDepts
                 }
             },
             orderBy: { startTime: 'asc' },
@@ -775,7 +778,7 @@ router.get('/upcoming', authenticate, requireRole('STUDENT'), async (req, res, n
 });
 
 // GET /my-registrations — List events the student is registered for
-router.get('/my-registrations', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+router.get('/my-registrations', authenticate, async (req, res, next) => {
     try {
         const registrations = await prisma.eventParticipant.findMany({
             where: { 
@@ -818,7 +821,7 @@ router.get('/my-registrations', authenticate, requireRole('STUDENT'), async (req
 });
 
 // POST /:id/register — Self-register for an event
-router.post('/:id/register', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+router.post('/:id/register', authenticate, async (req, res, next) => {
     try {
         const eventId = req.params.id;
         const studentId = req.user.id;
@@ -868,7 +871,7 @@ router.post('/:id/register', authenticate, requireRole('STUDENT'), async (req, r
 });
 
 // POST /:id/cancel — Cancel registration
-router.post('/:id/cancel', authenticate, requireRole('STUDENT'), async (req, res, next) => {
+router.post('/:id/cancel', authenticate, async (req, res, next) => {
     try {
         const eventId = req.params.id;
         const studentId = req.user.id;
