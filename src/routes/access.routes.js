@@ -795,7 +795,7 @@ router.post(
 
             if (scanEvent) {
                 emitScanEvent({
-                    scanEvent,
+                    scanEvent: { ...scanEvent, gateName: gateName || null },
                     student: {
                         fullName: req.user.email,
                         enrollmentNo: 'APP_USER',

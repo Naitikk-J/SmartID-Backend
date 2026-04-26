@@ -670,6 +670,11 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
                         select: {
                             status: true,
                         }
+                    },
+                    gate: {
+                        select: {
+                            name: true,
+                        }
                     }
                 }
             }),
@@ -688,6 +693,7 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
                 result: e.result,
                 badge: BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
                 gateId: e.gateId,
+                gateName: e.gate?.name || null,
                 direction: resolveDirectionFromScanEvent(e)
             })),
             total,

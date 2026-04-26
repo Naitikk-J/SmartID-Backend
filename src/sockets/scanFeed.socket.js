@@ -37,6 +37,7 @@ function emitScanEvent({ scanEvent, student, scanType, result }) {
             result,
             badge: BADGE_MAP[result] || 'GREY',
             gateId: scanEvent.gateId,
+            gateName: scanEvent.gateName || null,
         });
     } catch (err) {
         logger.warn('Failed to emit scan event:', err?.message || 'Unknown error');

@@ -1036,6 +1036,11 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
                     scanType: true,
                     gateId: true,
                     metadata: true,
+                    gate: {
+                        select: {
+                            name: true,
+                        },
+                    },
                 },
             }),
             prisma.faceDetectionLog.findMany({
@@ -1077,7 +1082,7 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
                 direction: resolveDirectionFromScanEvent(e),
                 time: e.scannedAt,
                 result: e.result,
-                gate: e.gateId || 'Main Gate',
+                gate: e.gate?.name || 'Main Gate',
             })),
             ...faceLogs.map(l => ({
                 id: l.id,
