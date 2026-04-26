@@ -259,7 +259,9 @@ router.get('/sessions/:id/export', authenticate, requireRole('FACULTY', 'HOD', '
 
         if (allStudents.length > 0) {
             // Full class list with present/absent
+            const processedIds = new Set();
             for (const student of allStudents) {
+                processedIds.add(student.id);
                 const record = markedSet.get(student.id);
                 rows.push([
                     sno++,
@@ -272,6 +274,23 @@ router.get('/sessions/:id/export', authenticate, requireRole('FACULTY', 'HOD', '
                     record ? new Date(record.markedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '',
                     record ? record.method : '',
                 ].join(','));
+            }
+
+            // Also add students who marked attendance but were not in the class list
+            for (const record of session.records) {
+                if (!processedIds.has(record.studentId)) {
+                    rows.push([
+                        sno++,
+                        record.student.enrollmentNo,
+                        `"${record.student.fullName}"`,
+                        record.student.department || '',
+                        record.student.year || '',
+                        record.student.section || '',
+                        'PRESENT',
+                        new Date(record.markedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                        record.method,
+                    ].join(','));
+                }
             }
         } else {
             // Only marked students (no class list)

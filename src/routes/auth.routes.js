@@ -893,6 +893,48 @@ router.get('/me', authenticate, async (req, res, next) => {
     }
 });
 
+// ── GET /eid-card/token ──────────────────────────────────────
+// Generate a short-lived dynamic QR token for the student's ID card
+router.get('/eid-card/token', authenticate, async (req, res, next) => {
+    try {
+        if (req.user.role !== 'STUDENT') {
+            const { AppError } = require('../middleware/errorHandler');
+            throw new AppError('Only students can generate ID card tokens', 403);
+        }
+
+        const prisma = require('../config/database');
+        const { encryptToken } = require('../services/crypto.service');
+
+        const card = await prisma.card.findFirst({
+            where: {
+                studentId: req.user.id,
+                status: 'ACTIVE'
+            },
+            select: { id: true }
+        });
+
+        if (!card) {
+            const { AppError } = require('../middleware/errorHandler');
+            throw new AppError('Active card not found', 404);
+        }
+
+        // Generate token valid for a very short window
+        const token = encryptToken({
+            cardId: card.id,
+            studentId: req.user.id,
+            type: 'DYNAMIC_ID',
+            ts: Date.now()
+        });
+
+        res.json({
+            success: true,
+            data: { token }
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 // ── PATCH /me ─────────────────────────────────────────────────
 const updateSelfSchema = z.object({
     phone: z.string().optional(),

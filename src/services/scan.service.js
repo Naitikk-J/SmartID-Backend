@@ -97,10 +97,43 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
         // ─────────────────────────────────────────────────────────
         // Step 2: Look up the card and student
         // ─────────────────────────────────────────────────────────
-        const card = await prisma.card.findUnique({
-            where: { qrToken: rawToken },
-            include: { student: true },
-        });
+        let card;
+        if (decryptedPayload && decryptedPayload.type === 'DYNAMIC_ID') {
+            // Check dynamic token freshness (15 seconds window)
+            const MAX_AGE = 15000;
+            const age = Date.now() - decryptedPayload.ts;
+            
+            if (age < -2000 || age > MAX_AGE) { // Allow 2s clock drift backwards
+                const fakeEvent = await logScanEvent({
+                    studentId: decryptedPayload.studentId,
+                    cardId: decryptedPayload.cardId,
+                    scannedById: operatorId,
+                    scanType: 'FAKE_ATTEMPT',
+                    gateId,
+                    gpsLat,
+                    gpsLng,
+                    result: 'TIME_EXPIRED',
+                    metadata: { reason: 'Dynamic token expired', age },
+                });
+                return buildResult('TIME_EXPIRED', null, fakeEvent, { message: 'QR code expired. Please refresh.' });
+            }
+
+            card = await prisma.card.findUnique({
+                where: { id: decryptedPayload.cardId },
+                include: { student: true },
+            });
+
+            // Security check: Payload studentId must match card studentId
+            if (card && card.studentId !== decryptedPayload.studentId) {
+                 return buildResult('FAKE', null, null, { message: 'Token ownership mismatch' });
+            }
+        } else {
+            // Fallback to legacy static token lookup
+            card = await prisma.card.findUnique({
+                where: { qrToken: rawToken },
+                include: { student: true },
+            });
+        }
 
         if (!card) {
             const fakeEvent = await logScanEvent({
