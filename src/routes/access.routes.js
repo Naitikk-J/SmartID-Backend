@@ -506,6 +506,22 @@ router.post(
                 });
             }
 
+            // Enforce Hosteller-only access for Live Gate Scanning for students
+            if (req.user.role === 'STUDENT') {
+                const studentData = await prisma.student.findUnique({
+                    where: { id: req.user.id },
+                    select: { studentType: true },
+                });
+                
+                if (!studentData?.studentType || !studentData.studentType.startsWith('HOSTELLER')) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Access Denied: Live Gate scanning is restricted to registered hostellers only.',
+                        code: 'HOSTELLER_ACCESS_RESTRICTED',
+                    });
+                }
+            }
+
             const qrToken = String(req.body.qr_token || req.body.qrToken || '').trim();
             const latitude = Number(req.body.latitude);
             const longitude = Number(req.body.longitude);

@@ -310,6 +310,11 @@ const createStudentSchema = z.object({
 
 const updateStudentSchema = createStudentSchema.partial();
 
+const bulkHostellerSchema = z.object({
+    studentIds: z.array(z.string()).min(1),
+    studentType: z.enum(['DAY_SCHOLAR', 'HOSTELLER_BOYS', 'HOSTELLER_GIRLS']),
+});
+
 // ── GET / — List students ───────────────────────────────────
 router.get('/', authenticate, requireRole('HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'), async (req, res, next) => {
     try {
@@ -454,6 +459,28 @@ router.post('/bulk-import', authenticate, requireRole('SUPER_ADMIN'), upload.sin
         }
 
         res.json({ success: true, data: results });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ── PATCH /bulk-hosteller — Bulk update student types ─────────
+router.patch('/bulk-hosteller', authenticate, requireRole('HOD', 'SUPER_ADMIN'), validate(bulkHostellerSchema), async (req, res, next) => {
+    try {
+        const { studentIds, studentType } = req.body;
+        const result = await prisma.student.updateMany({
+            where: { id: { in: studentIds } },
+            data: { studentType },
+        });
+
+        await logAction(req, {
+            action: 'BULK_UPDATE_HOSTELLER',
+            entity: 'Student',
+            entityId: 'BULK',
+            newValue: { count: result.count, studentType }
+        }).catch(() => { });
+
+        res.json({ success: true, data: { count: result.count } });
     } catch (err) {
         next(err);
     }
