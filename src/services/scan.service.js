@@ -99,11 +99,11 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
         // ─────────────────────────────────────────────────────────
         let card;
         if (decryptedPayload && decryptedPayload.type === 'DYNAMIC_ID') {
-            // Check dynamic token freshness (15 seconds window)
-            const MAX_AGE = 15000;
+            // Check dynamic token freshness (30 seconds window)
+            const MAX_AGE = 30000;
             const age = Date.now() - decryptedPayload.ts;
             
-            if (age < -2000 || age > MAX_AGE) { // Allow 2s clock drift backwards
+            if (age < -5000 || age > MAX_AGE) { // Allow 5s clock drift backwards
                 const fakeEvent = await logScanEvent({
                     studentId: decryptedPayload.studentId,
                     cardId: decryptedPayload.cardId,

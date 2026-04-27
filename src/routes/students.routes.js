@@ -831,19 +831,36 @@ router.post('/verify-qr', authenticate, requireRole('SUPER_ADMIN', 'SECURITY_GUA
         try {
             decoded = decryptToken(qrToken);
         } catch (err) {
-            throw new AppError('Invalid QR Token', 400);
+            throw new AppError('Invalid or corrupted QR Token', 400);
         }
 
-        if (!decoded || !decoded.enrollmentNo) {
+        if (!decoded) {
             throw new AppError('Invalid QR Token Data', 400);
         }
 
-        const student = await prisma.student.findUnique({
-            where: { enrollmentNo: decoded.enrollmentNo }
-        });
+        // Handle Dynamic Token Expiry (30s window)
+        if (decoded.ts) {
+            const MAX_AGE = 30000;
+            const age = Date.now() - decoded.ts;
+            if (age < -5000 || age > MAX_AGE) {
+                throw new AppError('QR code expired. Please ask the student to refresh.', 400);
+            }
+        }
+
+        // Resolve student from either enrollmentNo (static) or studentId (dynamic)
+        let student;
+        if (decoded.enrollmentNo) {
+            student = await prisma.student.findUnique({
+                where: { enrollmentNo: decoded.enrollmentNo }
+            });
+        } else if (decoded.studentId) {
+            student = await prisma.student.findUnique({
+                where: { id: decoded.studentId }
+            });
+        }
 
         if (!student) {
-            throw new AppError('Student not found', 404);
+            throw new AppError('Student not found for this QR token', 404);
         }
 
         // Return a safe subset of student data for the E-ID card
