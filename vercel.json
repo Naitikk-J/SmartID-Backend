@@ -22,7 +22,7 @@
     ],
     "env": {
         "NODE_ENV": "production",
-        "DASHBOARD_URL": "http://localhost:5173,https://smart-id-frontend-seven.vercel.app"
+        "DASHBOARD_URL": "http://localhost:5173,https://smartid.naitik.site"
     },
     "crons": [
         {

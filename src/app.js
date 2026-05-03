@@ -75,7 +75,7 @@ app.use(helmet({
 // ── 2. CORS ──────────────────────────────────────────────────
 const allowedOrigins = [
     'http://localhost:5173',
-    'https://smart-id-frontend-seven.vercel.app'
+    'https://smartid.naitik.site'
 ];
 
 // Add from env if present
