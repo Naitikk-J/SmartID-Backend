@@ -7,11 +7,16 @@ const express = require('express');
 const { z } = require('zod');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
-const { scanRateLimit } = require('../middleware/rateLimit');
+const { scanRateLimit, heavyRateLimit } = require('../middleware/rateLimit');
+const { bodyLimit } = require('../middleware/bodyLimit');
+const { asyncHandler } = require('../middleware/asyncHandler');
 const scanService = require('../services/scan.service');
 const faceAiService = require('../services/faceAi.service');
 const prisma = require('../config/database');
 const { AppError } = require('../middleware/errorHandler');
+const { csvFilename } = require('../utils/csv');
+const { parsePagination } = require('../utils/pagination');
+const { safeContains } = require('../utils/search');
 
 const router = express.Router();
 const MONGODB_OBJECT_ID_REGEX = /^[a-f\d]{24}$/i;
@@ -60,6 +65,7 @@ router.post(
     '/verify',
     authenticate,
     // requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'), // Replaced with any authenticated user
+    bodyLimit('64kb'), // QR scan payloads are <1KB — anything bigger is malicious.
     scanRateLimit,
     validate(verifyScanSchema),
     async (req, res, next) => {
@@ -257,12 +263,38 @@ router.get(
                 direction,
                 search,
                 studentType,
+                since: req.query.since, // Cursor for polling fallback.
             });
-            res.json({ success: true, data: result });
+            res.json({
+                success: true,
+                data: result,
+                // Echo a server-side cursor so the client can poll for
+                // strictly-newer events without local clock skew.
+                cursor: result.events?.[0]?.scannedAt || req.query.since || new Date().toISOString(),
+            });
         } catch (err) {
             next(err);
         }
     }
+);
+
+// GET /stream — Server-Sent Events for live scan feed
+//
+// Drop-in fallback for environments where Socket.IO cannot run
+// (serverless) or where the client doesn't want a WebSocket. The
+// admin dashboard subscribes here and gets the same `SCAN_EVENT`,
+// `EXIT_RULES_UPDATED`, and `SESSION_UPDATE` frames as Socket.IO.
+//
+// Heartbeats every 25s keep the connection alive across NAT /
+// proxy timers. EventSource clients auto-reconnect on close.
+router.get(
+    '/stream',
+    authenticate,
+    requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN'),
+    (req, res) => {
+        const sseHub = require('../sockets/sseHub');
+        sseHub.subscribe(req, res);
+    },
 );
 
 // GET /hosteller/outside
@@ -408,18 +440,20 @@ router.get(
     '/export',
     authenticate,
     requireRole('SECURITY_GUARD', 'HOD', 'SUPER_ADMIN', 'FACULTY', 'WARDEN', 'STUDENT'),
-    async (req, res, next) => {
-        try {
-            const { date } = req.query;
-            const csv = await scanService.exportScans({ date });
+    heavyRateLimit, // CSV exports are expensive; cap per-user.
+    asyncHandler(async (req, res) => {
+        const { date } = req.query;
+        const csv = await scanService.exportScans({ date });
 
-            res.setHeader('Content-Type', 'text/csv');
-            res.setHeader('Content-Disposition', `attachment; filename=scan_logs_${date || 'all'}.csv`);
-            res.send(csv);
-        } catch (err) {
-            next(err);
-        }
-    }
+        // Sanitised filename — strips CRLF (header-injection) + path chars.
+        const filename = csvFilename(`scan_logs_${date || 'all'}`);
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        // Defence-in-depth: tell the browser this is text, not HTML.
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.send(csv);
+    }),
 );
 
 // ── POST /face-match — Find matching students by face descriptor ──
@@ -1120,9 +1154,42 @@ router.get('/me', authenticate, requireRole('STUDENT'), async (req, res, next) =
 });
 
 // POST /offline-sync-audit — mobile offline queue reconciliation trail
-router.post('/offline-sync-audit', authenticate, requireRole('STUDENT'), validate(offlineSyncAuditSchema), async (req, res, next) => {
-    try {
+//
+// Mobile clients retry aggressively on flaky networks, so this endpoint
+// is idempotent: a 60s Redis SETNX dedupe on (student, qrTokenHash,
+// deviceTimestamp, status) silently returns the previous response
+// instead of inserting a duplicate audit row.
+router.post(
+    '/offline-sync-audit',
+    bodyLimit('256kb'),
+    authenticate,
+    requireRole('STUDENT'),
+    validate(offlineSyncAuditSchema),
+    asyncHandler(async (req, res) => {
         const data = req.body;
+        const { getRedis, safeCall } = require('../config/redis');
+        const crypto = require('crypto');
+
+        const idempotencyKey = (() => {
+            const parts = [
+                req.user.id,
+                data.qrTokenHash || '',
+                data.deviceTimestamp || '',
+                data.status,
+                data.scanEventId || '',
+            ].join('|');
+            return `idempotency:offline-sync:${crypto.createHash('sha256').update(parts).digest('base64url')}`;
+        })();
+
+        const redis = getRedis();
+        if (redis) {
+            const cached = await safeCall(redis.get(idempotencyKey), 'idemp.get');
+            if (cached) {
+                try {
+                    return res.status(200).json({ success: true, data: JSON.parse(cached), idempotent: true });
+                } catch { /* fall through to a fresh insert */ }
+            }
+        }
 
         const audit = await prisma.scanSyncAudit.create({
             data: {
@@ -1139,17 +1206,21 @@ router.post('/offline-sync-audit', authenticate, requireRole('STUDENT'), validat
             },
         });
 
-        res.status(201).json({
-            success: true,
-            data: {
-                id: audit.id,
-                status: audit.status,
-                createdAt: audit.createdAt,
-            },
-        });
-    } catch (err) {
-        next(err);
-    }
-});
+        const responsePayload = {
+            id: audit.id,
+            status: audit.status,
+            createdAt: audit.createdAt,
+        };
+
+        if (redis) {
+            await safeCall(
+                redis.set(idempotencyKey, JSON.stringify(responsePayload), 'EX', 60),
+                'idemp.set',
+            );
+        }
+
+        res.status(201).json({ success: true, data: responsePayload });
+    }),
+);
 
 module.exports = router;

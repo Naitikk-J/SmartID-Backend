@@ -11,6 +11,7 @@ const faceAiService = require('../services/faceAi.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
 const { createAccessQrToken, verifyAccessQrToken } = require('../services/accessQrToken.service');
 const { getGeofencingSettings } = require('../services/geofencing-settings.service');
+const { logAction } = require('../services/audit.service');
 
 const router = express.Router();
 
@@ -372,6 +373,13 @@ router.put(
                 return res.status(404).json({ success: false, error: 'Gate not found' });
             }
 
+            // Snapshot the previous geofence so the audit row carries a
+            // proper diff — geofence changes are high-value targets for
+            // forensic review (someone shrinking the perimeter to wave
+            // people through without GPS rejection, for instance).
+            let oldGeofence = null;
+            try { oldGeofence = gate.location ? JSON.parse(gate.location) : null; } catch { /* not JSON */ }
+
             const payload = {
                 center_lat: req.body.center_lat,
                 center_lng: req.body.center_lng,
@@ -389,13 +397,21 @@ router.put(
                 },
             });
 
-            return res.json({
+            res.json({
                 success: true,
                 data: {
                     gateId: gate.id,
                     geofence: payload,
                 },
             });
+
+            logAction(req, {
+                action: 'UPDATE_GATE_GEOFENCE',
+                entity: 'Gate',
+                entityId: gate.id,
+                oldValue: oldGeofence,
+                newValue: payload,
+            }).catch(() => { /* audit-service already logs */ });
         } catch (err) {
             next(err);
         }
@@ -904,10 +920,20 @@ router.put(
             const validInHostel = typeof req.body.validInHostel === 'boolean' ? req.body.validInHostel : true;
 
             const configs = loadGateQrConfigs();
-            configs[req.params.id] = { qrMode, qrTtlSeconds, validInCampus, validInHostel, updatedAt: new Date().toISOString() };
+            const oldConfig = configs[req.params.id] || null;
+            const newConfig = { qrMode, qrTtlSeconds, validInCampus, validInHostel, updatedAt: new Date().toISOString() };
+            configs[req.params.id] = newConfig;
             saveGateQrConfigs(configs);
 
-            return res.json({ success: true, data: configs[req.params.id] });
+            res.json({ success: true, data: newConfig });
+
+            logAction(req, {
+                action: 'UPDATE_GATE_QR_CONFIG',
+                entity: 'Gate',
+                entityId: req.params.id,
+                oldValue: oldConfig,
+                newValue: newConfig,
+            }).catch(() => {});
         } catch (err) { next(err); }
     }
 );
@@ -948,7 +974,7 @@ router.post(
                 },
             });
 
-            return res.status(201).json({
+            res.status(201).json({
                 success: true,
                 data: {
                     id: gate.id,
@@ -956,6 +982,13 @@ router.post(
                     hasGeofence: false,
                 },
             });
+
+            logAction(req, {
+                action: 'CREATE_GATE',
+                entity: 'Gate',
+                entityId: gate.id,
+                newValue: { id: gate.id, name: gate.name },
+            }).catch(() => {});
         } catch (err) {
             next(err);
         }
@@ -996,7 +1029,7 @@ router.patch(
                 data: { name: newName },
             });
 
-            return res.json({
+            res.json({
                 success: true,
                 data: {
                     id: updated.id,
@@ -1004,6 +1037,14 @@ router.patch(
                     hasGeofence: Boolean(parseGeofence(updated.location)),
                 },
             });
+
+            logAction(req, {
+                action: 'RENAME_GATE',
+                entity: 'Gate',
+                entityId: gateId,
+                oldValue: { name: gate.name },
+                newValue: { name: updated.name },
+            }).catch(() => {});
         } catch (err) {
             next(err);
         }

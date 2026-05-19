@@ -159,6 +159,9 @@ model Student {
   @@index([userType])
   @@index([googleId])
   @@index([googleEmail])
+  @@index([department, year])
+  @@index([isActive])
+  @@index([linkedDeviceId])
   @@map("students")
 }
 
@@ -178,6 +181,8 @@ model Card {
   scanEvents      ScanEvent[]
 
   @@index([studentId])
+  @@index([status])
+  @@index([studentId, status])
   @@map("cards")
 }
 
@@ -210,6 +215,10 @@ model AdminUser {
   gateId              String?      @db.ObjectId
   gate                Gate?        @relation(fields: [gateId], references: [id])
 
+  @@index([role])
+  @@index([role, isActive])
+  @@index([department])
+  @@index([gateId])
   @@map("admin_users")
 }
 
@@ -251,6 +260,8 @@ model ScanEvent {
   @@index([scannedById, scanType, scannedAt])
   @@index([result, scannedAt])
   @@index([gateId, scannedAt])
+  @@index([cardId, scannedAt])
+  @@index([studentId, scanType, result, scannedAt])
 
   @@map("scan_events")
 }
@@ -277,6 +288,8 @@ model CurfewRule {
   isActive    Boolean     @default(true)
   updatedAt   DateTime    @updatedAt
 
+  @@index([studentType])
+  @@index([studentType, isActive])
   @@map("curfew_rules")
 }
 
@@ -330,6 +343,9 @@ model CampusEvent {
   messRules   EventMessRule[]
   mealScans   EventMealScan[]
 
+  @@index([isActive, startTime, endTime])
+  @@index([eventDate])
+  @@index([createdById])
   @@map("campus_events")
 }
 
@@ -551,6 +567,10 @@ model LibraryTransaction {
   student     Student  @relation(fields: [studentId], references: [id])
   book        Book     @relation(fields: [bookId], references: [id])
 
+  @@index([studentId])
+  @@index([bookId])
+  @@index([returnedAt])
+  @@index([dueAt, returnedAt])
   @@map("library_transactions")
 }
 
@@ -595,6 +615,10 @@ model AuditLog {
 
   actor       AdminUser @relation(fields: [actorId], references: [id])
 
+  @@index([loggedAt])
+  @@index([actorId, loggedAt])
+  @@index([entity, entityId])
+  @@index([action, loggedAt])
   @@map("audit_logs")
 }
 
@@ -700,6 +724,9 @@ model PinkSlip {
   student      Student        @relation(fields: [studentId], references: [id])
   approvedBy   AdminUser?     @relation("ApprovedPinkSlips", fields: [approvedById], references: [id])
 
+  @@index([studentId, status])
+  @@index([status, createdAt])
+  @@index([studentId, createdAt])
   @@map("pink_slips")
 }
 

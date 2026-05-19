@@ -10,6 +10,10 @@ const attendanceService = require('./attendance.service');
 const { emitScanEvent } = require('../sockets/scanFeed.socket');
 const logger = require('../config/logger');
 const { getGeofencingSettings } = require('./geofencing-settings.service');
+const { withLock } = require('../utils/locks');
+const { csvRow } = require('../utils/csv');
+const { safeContains } = require('../utils/search');
+const { parsePagination } = require('../utils/pagination');
 
 function haversineDistance(lat1, lng1, lat2, lng2) {
     const toRad = (deg) => (deg * Math.PI) / 180;
@@ -20,6 +24,33 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
         Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return 6371000 * c; // Earth radius in metres
+}
+
+/**
+ * Resolve which meal-slot bucket a timestamp falls into. Exported for tests.
+ *  - BREAKFAST: 06:00–10:00
+ *  - LUNCH:     11:00–15:00
+ *  - SNACKS:    16:00–17:00
+ *  - DINNER:    18:00–22:00
+ *  - OTHER:     anything else (whole-day bucket)
+ */
+function resolveMealSlot(at = new Date()) {
+    const hour = at.getHours();
+    let slot;
+    if (hour >= 6 && hour < 10) slot = 'BREAKFAST';
+    else if (hour >= 11 && hour < 15) slot = 'LUNCH';
+    else if (hour >= 16 && hour < 17) slot = 'SNACKS';
+    else if (hour >= 18 && hour < 22) slot = 'DINNER';
+    else slot = 'OTHER';
+
+    const start = new Date(at);
+    const end = new Date(at);
+    if (slot === 'BREAKFAST') { start.setHours(6, 0, 0, 0); end.setHours(10, 0, 0, 0); }
+    else if (slot === 'LUNCH') { start.setHours(11, 0, 0, 0); end.setHours(15, 0, 0, 0); }
+    else if (slot === 'SNACKS') { start.setHours(16, 0, 0, 0); end.setHours(17, 0, 0, 0); }
+    else if (slot === 'DINNER') { start.setHours(18, 0, 0, 0); end.setHours(22, 0, 0, 0); }
+    else { start.setHours(0, 0, 0, 0); end.setHours(23, 59, 59, 999); }
+    return { slot, start, end };
 }
 
 function checkGeofence(gpsLat, gpsLng, centerLat, centerLng, radiusMetres) {
@@ -265,52 +296,61 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
             }
 
             case 'GATE_ENTRY': {
-                // Check if already on campus (last event was ENTRY)
+                // Coordinate concurrent entries (two scanners hitting the same
+                // student in the same second) with a short Redis lock. Falls
+                // through unlocked if Redis is down — we still rely on the
+                // ALREADY_ENTERED check below, which closes 99% of the gap.
+                const lockKey = `scan:gate-entry:${student.id}`;
+                const earlyResult = await withLock(
+                    lockKey,
+                    3000,
+                    async () => runGateEntry(),
+                    async () => runGateEntry(), // best-effort fall-through
+                );
+                if (earlyResult) return earlyResult;
 
-                const lastEvent = await prisma.exitEvent.findFirst({
-                    where: {
-                        studentId: student.id,
-                        eventTime: { gte: todayStart }
-                    },
-                    orderBy: { eventTime: 'desc' },
-                });
-
-                if (lastEvent && lastEvent.direction === 'ENTRY') {
-                    const event = await logScanEvent({
-                        studentId: student.id,
-                        cardId: card.id,
-                        scannedById: operatorId,
-                        scanType,
-                        gateId,
-                        gpsLat,
-                        gpsLng,
-                        result: 'ALREADY_ENTERED',
-                    });
-                    return buildResult('ALREADY_ENTERED', student, event, {
-                        message: 'Student already entered. Need exit record?',
-                    });
-                }
-
-                const entryCount = await exitService.countEntriesToday(student.id, todayStart);
-
-                await exitService.recordExitEvent(student.id, gateId, 'ENTRY', operatorId);
-
-                if (entryCount > 0) {
-                    const reentryResult = `REENTERED_${entryCount + 1}`;
-                    const scanEvent = await logScanEvent({
-                        studentId: student.id,
-                        cardId: card.id,
-                        scannedById: operatorId,
-                        scanType,
-                        gateId,
-                        gpsLat,
-                        gpsLng,
-                        result: reentryResult,
+                async function runGateEntry() {
+                    const lastEvent = await prisma.exitEvent.findFirst({
+                        where: { studentId: student.id, eventTime: { gte: todayStart } },
+                        orderBy: { eventTime: 'desc' },
                     });
 
-                    const result = buildResult(reentryResult, student, scanEvent);
-                    emitScanEvent({ scanEvent, student, scanType, result: reentryResult });
-                    return result;
+                    if (lastEvent && lastEvent.direction === 'ENTRY') {
+                        const event = await logScanEvent({
+                            studentId: student.id,
+                            cardId: card.id,
+                            scannedById: operatorId,
+                            scanType,
+                            gateId,
+                            gpsLat,
+                            gpsLng,
+                            result: 'ALREADY_ENTERED',
+                        });
+                        return buildResult('ALREADY_ENTERED', student, event, {
+                            message: 'Student already entered. Need exit record?',
+                        });
+                    }
+
+                    const entryCount = await exitService.countEntriesToday(student.id, todayStart);
+                    await exitService.recordExitEvent(student.id, gateId, 'ENTRY', operatorId);
+
+                    if (entryCount > 0) {
+                        const reentryResult = `REENTERED_${entryCount + 1}`;
+                        const scanEvent = await logScanEvent({
+                            studentId: student.id,
+                            cardId: card.id,
+                            scannedById: operatorId,
+                            scanType,
+                            gateId,
+                            gpsLat,
+                            gpsLng,
+                            result: reentryResult,
+                        });
+                        const built = buildResult(reentryResult, student, scanEvent);
+                        emitScanEvent({ scanEvent, student, scanType, result: reentryResult });
+                        return built;
+                    }
+                    return null;
                 }
                 break;
             }
@@ -396,58 +436,50 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
             }
 
             case 'MESS': {
-                // Determine current meal slot based on time of day
-                const currentHour = new Date().getHours();
-                let mealSlot;
-                if (currentHour >= 6 && currentHour < 10) {
-                    mealSlot = 'BREAKFAST';
-                } else if (currentHour >= 11 && currentHour < 15) {
-                    mealSlot = 'LUNCH';
-                } else if (currentHour >= 16 && currentHour < 17) {
-                    mealSlot = 'SNACKS';
-                } else if (currentHour >= 18 && currentHour < 22) {
-                    mealSlot = 'DINNER';
-                } else {
-                    mealSlot = 'OTHER';
+                const { slot: mealSlot, start: slotStart, end: slotEnd } = resolveMealSlot(new Date());
+
+                // Lock per student+meal-slot for 5s so two queues can't both
+                // pass through the duplicate check. Best-effort fall-through
+                // when Redis is unavailable (duplicate check still catches
+                // most cases — only sub-second concurrent scans escape).
+                const messLockKey = `scan:mess:${student.id}:${mealSlot}`;
+                const messResult = await withLock(
+                    messLockKey,
+                    5000,
+                    () => runMessCheck(),
+                    () => runMessCheck(),
+                );
+                if (messResult) return messResult;
+
+                async function runMessCheck() {
+                    const messCount = await prisma.scanEvent.count({
+                        where: {
+                            studentId: student.id,
+                            scanType: 'MESS',
+                            result: 'VERIFIED',
+                            scannedAt: { gte: slotStart, lte: slotEnd },
+                        },
+                    });
+
+                    if (messCount > 0) {
+                        const event = await logScanEvent({
+                            studentId: student.id,
+                            cardId: card.id,
+                            scannedById: operatorId,
+                            scanType,
+                            gateId,
+                            gpsLat,
+                            gpsLng,
+                            result: 'DUPLICATE',
+                            metadata: { mealSlot },
+                        });
+                        return buildResult('DUPLICATE', student, event, {
+                            message: `Already scanned for ${mealSlot.toLowerCase()} today`,
+                        });
+                    }
+                    return null;
                 }
 
-                // Calculate the start/end of the current meal slot window
-                const slotStart = new Date();
-                const slotEnd = new Date();
-                if (mealSlot === 'BREAKFAST') { slotStart.setHours(6, 0, 0, 0); slotEnd.setHours(10, 0, 0, 0); }
-                else if (mealSlot === 'LUNCH') { slotStart.setHours(11, 0, 0, 0); slotEnd.setHours(15, 0, 0, 0); }
-                else if (mealSlot === 'SNACKS') { slotStart.setHours(16, 0, 0, 0); slotEnd.setHours(17, 0, 0, 0); }
-                else if (mealSlot === 'DINNER') { slotStart.setHours(18, 0, 0, 0); slotEnd.setHours(22, 0, 0, 0); }
-                else { slotStart.setHours(0, 0, 0, 0); slotEnd.setHours(23, 59, 59, 999); }
-
-                // Check if student already scanned for THIS meal slot
-                const messCount = await prisma.scanEvent.count({
-                    where: {
-                        studentId: student.id,
-                        scanType: 'MESS',
-                        result: 'VERIFIED',
-                        scannedAt: { gte: slotStart, lte: slotEnd },
-                    },
-                });
-
-                if (messCount > 0) {
-                    const event = await logScanEvent({
-                        studentId: student.id,
-                        cardId: card.id,
-                        scannedById: operatorId,
-                        scanType,
-                        gateId,
-                        gpsLat,
-                        gpsLng,
-                        result: 'DUPLICATE',
-                        metadata: { mealSlot },
-                    });
-                    return buildResult('DUPLICATE', student, event, {
-                        message: `Already scanned for ${mealSlot.toLowerCase()} today`,
-                    });
-                }
-
-                // Add meal slot to metadata for the verified event
                 metadata.mealSlot = mealSlot;
                 break;
             }
@@ -659,8 +691,12 @@ function buildResult(result, student, scanEvent, extra = {}) {
 /**
  * Get recent scans for the dashboard live feed.
  */
-async function getRecentScans({ date, page = 1, limit = 50, direction, search, studentType }) {
+async function getRecentScans({ date, page = 1, limit = 50, direction, search, studentType, since }) {
     try {
+        const { page: safePage, limit: safeLimit, skip } = parsePagination(
+            { page, limit },
+            { maxLimit: 200 },
+        );
         const where = {};
 
         if (date) {
@@ -669,6 +705,19 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
             const end = new Date(date);
             end.setHours(23, 59, 59, 999);
             where.scannedAt = { gte: start, lte: end };
+        }
+
+        // Incremental polling cursor — admin UI passes the timestamp of
+        // the newest event it already has and gets only the strictly
+        // newer ones. Survives Vercel WebSocket gaps and brief network
+        // hiccups without duplicate rows.
+        if (since) {
+            const sinceDate = since instanceof Date ? since : new Date(since);
+            if (!Number.isNaN(sinceDate.getTime())) {
+                where.scannedAt = where.scannedAt
+                    ? { ...where.scannedAt, gt: sinceDate }
+                    : { gt: sinceDate };
+            }
         }
 
         if (direction && ['ENTRY', 'EXIT'].includes(String(direction).toUpperCase())) {
@@ -686,24 +735,24 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
             };
         }
 
-        if (search) {
-            const term = String(search).trim();
-            if (term) {
-                where.student = {
-                    ...(where.student || {}),
-                    OR: [
-                        { fullName: { contains: term, mode: 'insensitive' } },
-                        { enrollmentNo: { contains: term, mode: 'insensitive' } },
-                    ],
-                };
-            }
+        // Regex-escape user-supplied search term to neutralise NoSQL
+        // injection / ReDoS via the Prisma `contains` -> $regex bridge.
+        const term = safeContains(search);
+        if (term) {
+            where.student = {
+                ...(where.student || {}),
+                OR: [
+                    { fullName: { contains: term, mode: 'insensitive' } },
+                    { enrollmentNo: { contains: term, mode: 'insensitive' } },
+                ],
+            };
         }
 
         const [events, total] = await Promise.all([
             prisma.scanEvent.findMany({
                 where,
-                take: limit,
-                skip: (page - 1) * limit,
+                take: safeLimit,
+                skip,
                 orderBy: { scannedAt: 'desc' },
                 include: {
                     student: {
@@ -747,7 +796,9 @@ async function getRecentScans({ date, page = 1, limit = 50, direction, search, s
                 direction: resolveDirectionFromScanEvent(e)
             })),
             total,
-            pages: Math.ceil(total / limit)
+            page: safePage,
+            limit: safeLimit,
+            pages: Math.ceil(total / safeLimit),
         };
     } catch (err) {
         logger.error('Failed to fetch recent scans:', err);
@@ -788,20 +839,23 @@ async function exportScans({ date }) {
             }
         });
 
-        // Generate CSV
+        // Generate CSV — every cell goes through escapeCsvField to defeat
+        // formula-injection (=cmd, +cmd, -cmd, @cmd) plus proper quoting.
         const headers = ['Time', 'Enrollment No', 'Student Name', 'Department', 'Scan Type', 'Direction', 'Result', 'Badge'];
-        const rows = events.map(e => [
-            new Date(e.scannedAt).toLocaleTimeString([], { hour12: false }),
-            e.student?.enrollmentNo || 'N/A',
-            `"${e.student?.fullName || 'Unknown'}"`,
-            e.student?.department || 'N/A',
-            e.scanType,
-            resolveDirectionFromScanEvent(e) || 'N/A',
-            e.result,
-            BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY')
-        ]);
-
-        return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+        const lines = [csvRow(headers)];
+        for (const e of events) {
+            lines.push(csvRow([
+                new Date(e.scannedAt).toLocaleTimeString([], { hour12: false }),
+                e.student?.enrollmentNo || 'N/A',
+                e.student?.fullName || 'Unknown',
+                e.student?.department || 'N/A',
+                e.scanType,
+                resolveDirectionFromScanEvent(e) || 'N/A',
+                e.result,
+                BADGE_MAP[e.result] || (e.card?.status === 'ACTIVE' ? 'GREEN' : 'GREY'),
+            ]));
+        }
+        return lines.join('\r\n');
     } catch (err) {
         logger.error('Failed to export scans:', err);
         throw err;
@@ -815,4 +869,7 @@ module.exports = {
     calculateDistance,
     validateGeofence,
     buildResult,
+    haversineDistance,
+    checkGeofence,
+    resolveMealSlot,
 };

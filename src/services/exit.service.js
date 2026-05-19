@@ -5,6 +5,47 @@
 
 const prisma = require('../config/database');
 const logger = require('../config/logger');
+const cache = require('./cache.service');
+
+const EXIT_RULE_TTL_MS = 30000;     // Rules change rarely.
+const ACTIVE_EVENT_TTL_MS = 10000;  // Re-poll every 10s — events come and go.
+
+// ── Cached lookups ──────────────────────────────────────────
+
+async function getCachedActiveEvent(studentType, gateId, now) {
+    // Bucket the cache by 10s window so different scans share the result
+    // but we still re-check soon enough to honour event start/end.
+    const bucket = Math.floor(now.getTime() / ACTIVE_EVENT_TTL_MS);
+    const key = `exit:activeEvent:${bucket}:${gateId || '_'}:${studentType}`;
+    return cache.getOrLoad(
+        key,
+        () => prisma.campusEvent.findFirst({
+            where: {
+                isActive: true,
+                startTime: { lte: now },
+                endTime: { gte: now },
+                ...(gateId && { gateIds: { has: gateId } }),
+                OR: [
+                    { appliesTo: { has: 'ALL' } },
+                    { appliesTo: { has: studentType } },
+                ],
+            },
+            orderBy: { startTime: 'desc' },
+        }),
+        { ttlMs: ACTIVE_EVENT_TTL_MS, l1TtlMs: ACTIVE_EVENT_TTL_MS },
+    );
+}
+
+async function getCachedExitRule(studentType, dayOfWeek) {
+    const key = `exit:rule:${studentType}:${dayOfWeek}`;
+    return cache.getOrLoad(
+        key,
+        () => prisma.exitRule.findUnique({
+            where: { studentType_dayOfWeek: { studentType, dayOfWeek } },
+        }),
+        { ttlMs: EXIT_RULE_TTL_MS },
+    );
+}
 
 /**
  * Check if a student is allowed to exit campus.
@@ -23,20 +64,8 @@ async function checkExitAllowed(student, gateId) {
         return { allowed: true, mode: 'BYPASS', used: 0, max: -1, reason: 'Day Scholar bypass' };
     }
 
-    // Step 1: Check for active campus event
-    const activeEvent = await prisma.campusEvent.findFirst({
-        where: {
-            isActive: true,
-            startTime: { lte: now },
-            endTime: { gte: now },
-            ...(gateId && { gateIds: { has: gateId } }),
-            OR: [
-                { appliesTo: { has: 'ALL' } },
-                { appliesTo: { has: student.studentType } },
-            ],
-        },
-        orderBy: { startTime: 'desc' },
-    });
+    // Step 1: Check for active campus event (cached)
+    const activeEvent = await getCachedActiveEvent(student.studentType, gateId, now);
 
     // Step 2: If event found, apply event mode
     if (activeEvent) {
@@ -69,15 +98,8 @@ async function checkExitAllowed(student, gateId) {
         }
     }
 
-    // Step 3: No active event — use exit rules
-    const rule = await prisma.exitRule.findUnique({
-        where: {
-            studentType_dayOfWeek: {
-                studentType: student.studentType,
-                dayOfWeek,
-            },
-        },
-    });
+    // Step 3: No active event — use exit rules (cached)
+    const rule = await getCachedExitRule(student.studentType, dayOfWeek);
 
     if (!rule) {
         return { allowed: true, mode: 'NO_RULE', used: 0, max: -1, reason: 'No exit rule defined' };
@@ -204,6 +226,10 @@ async function updateExitRule(studentType, dayOfWeek, maxExits, adminId) {
         update: { maxExits, updatedById: adminId },
         create: { studentType, dayOfWeek, maxExits, updatedById: adminId },
     });
+
+    // Invalidate caches so the next scan sees the new rule.
+    await cache.invalidatePrefix('exit:rule:');
+    await cache.invalidatePrefix('exit:activeEvent:');
 
     // Audit log
     await prisma.auditLog.create({

@@ -1,0 +1,10 @@
+[
+    {
+        "_comment": "Replace with real AES-encrypted QR payloads + GPS coordinates from your staging dataset.",
+        "token": "REPLACE_WITH_AES_GCM_ENCRYPTED_PAYLOAD",
+        "gpsLat": 26.234,
+        "gpsLng": 78.181,
+        "location": "MAIN_GATE",
+        "scanType": "GATE_ENTRY"
+    }
+]

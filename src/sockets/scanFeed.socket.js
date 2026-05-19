@@ -1,9 +1,16 @@
 // ═══════════════════════════════════════════════════════════════
-// MITS Smart ID — Socket.io Scan Feed
-// Real-time event emitter for dashboard
+// MITS Smart ID — Real-time scan feed
+//
+// Dual-transport emitter:
+//   - Socket.IO room 'dashboard' for sticky-session deployments
+//   - SSE hub for serverless / no-WebSocket environments
+//
+// Both transports get the same payload, so admin UIs can pick
+// whichever is available without divergent code paths.
 // ═══════════════════════════════════════════════════════════════
 
 const logger = require('../config/logger');
+const sseHub = require('./sseHub');
 
 const BADGE_MAP = {
     VERIFIED: 'GREEN',
@@ -22,25 +29,32 @@ const BADGE_MAP = {
  * Emit a scan event to the dashboard room.
  */
 function emitScanEvent({ scanEvent, student, scanType, result }) {
-    try {
-        // Lazy-load io to avoid circular dependency
-        const { io } = require('../server');
-        if (!io) return;
+    const payload = {
+        id: scanEvent.id?.toString(),
+        time: scanEvent.scannedAt || new Date(),
+        studentName: student?.fullName || 'Unknown',
+        enrollmentNo: student?.enrollmentNo || 'N/A',
+        department: student?.department || 'N/A',
+        scanType,
+        result,
+        badge: BADGE_MAP[result] || 'GREY',
+        gateId: scanEvent.gateId,
+        gateName: scanEvent.gateName || null,
+    };
 
-        io.to('dashboard').emit('SCAN_EVENT', {
-            id: scanEvent.id?.toString(),
-            time: scanEvent.scannedAt || new Date(),
-            studentName: student?.fullName || 'Unknown',
-            enrollmentNo: student?.enrollmentNo || 'N/A',
-            department: student?.department || 'N/A',
-            scanType,
-            result,
-            badge: BADGE_MAP[result] || 'GREY',
-            gateId: scanEvent.gateId,
-            gateName: scanEvent.gateName || null,
-        });
+    // Socket.IO path (real WebSocket dashboard clients).
+    try {
+        const { io } = require('../server');
+        if (io) io.to('dashboard').emit('SCAN_EVENT', payload);
     } catch (err) {
-        logger.warn('Failed to emit scan event:', err?.message || 'Unknown error');
+        logger.warn('Failed to emit scan event over Socket.IO:', err?.message || 'Unknown error');
+    }
+
+    // SSE path (long-poll / serverless-friendly subscribers).
+    try {
+        sseHub.broadcast('SCAN_EVENT', payload);
+    } catch (err) {
+        logger.warn('Failed to emit scan event over SSE:', err?.message || 'Unknown error');
     }
 }
 
@@ -50,10 +64,12 @@ function emitScanEvent({ scanEvent, student, scanType, result }) {
 function emitExitRuleChange(updatedRules) {
     try {
         const { io } = require('../server');
-        if (!io) return;
-        io.to('dashboard').emit('EXIT_RULES_UPDATED', updatedRules);
+        if (io) io.to('dashboard').emit('EXIT_RULES_UPDATED', updatedRules);
     } catch (err) {
-        logger.warn('Failed to emit exit rule change:', err.message);
+        logger.warn('Failed to emit exit rule change (Socket.IO):', err.message);
+    }
+    try { sseHub.broadcast('EXIT_RULES_UPDATED', updatedRules); } catch (err) {
+        logger.warn('Failed to emit exit rule change (SSE):', err.message);
     }
 }
 
@@ -63,10 +79,12 @@ function emitExitRuleChange(updatedRules) {
 function emitSessionUpdate(sessionData) {
     try {
         const { io } = require('../server');
-        if (!io) return;
-        io.to('dashboard').emit('SESSION_UPDATE', sessionData);
+        if (io) io.to('dashboard').emit('SESSION_UPDATE', sessionData);
     } catch (err) {
-        logger.warn('Failed to emit session update:', err.message);
+        logger.warn('Failed to emit session update (Socket.IO):', err.message);
+    }
+    try { sseHub.broadcast('SESSION_UPDATE', sessionData); } catch (err) {
+        logger.warn('Failed to emit session update (SSE):', err.message);
     }
 }
 

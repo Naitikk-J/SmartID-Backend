@@ -4,6 +4,8 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const prisma = require('../config/database');
 const { createAccessQrToken } = require('../services/accessQrToken.service');
 const { getGeofencingSettings } = require('../services/geofencing-settings.service');
+const { logAction } = require('../services/audit.service');
+const { generalRateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
@@ -69,10 +71,19 @@ async function resolveGate(gateRef) {
     });
 }
 
+// GET /generate — Mint an HMAC-signed access QR token for a gate.
+//
+// Every minted token authorises someone to wave students through a
+// specific gate for a short TTL. The endpoint is gate-attendant-only,
+// rate-limited (gates legitimately refresh every TTL seconds, no
+// faster), and audited with the gate id, requested TTL, and whether
+// a geofence was attached. We never log the token value itself —
+// keeping the QR secret out of the audit trail is intentional.
 router.get(
     '/generate',
     authenticate,
     requireRole('SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD'),
+    generalRateLimit,
     async (req, res, next) => {
         try {
             const gateRef = String(req.query.gate_id || req.query.gateId || req.user.gateId || '').trim();
@@ -96,7 +107,7 @@ router.get(
                 geofence: gateGeofence,
             });
 
-            return res.json({
+            res.json({
                 success: true,
                 data: {
                     gate_id: gate.id,
@@ -106,6 +117,19 @@ router.get(
                     ttl_seconds: geofencingSettings.accessQrTtlSeconds,
                 },
             });
+
+            // Audit metadata only — token value deliberately omitted.
+            logAction(req, {
+                action: 'MINT_ACCESS_QR',
+                entity: 'Gate',
+                entityId: gate.id,
+                newValue: {
+                    gateName: gate.name,
+                    ttlSeconds: geofencingSettings.accessQrTtlSeconds,
+                    expiresAt: qr.expiresAt.toISOString(),
+                    geofenceAttached: Boolean(gateGeofence),
+                },
+            }).catch(() => {});
         } catch (err) {
             next(err);
         }

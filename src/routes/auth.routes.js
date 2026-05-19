@@ -16,6 +16,9 @@ const { loginRateLimit } = require('../middleware/rateLimit');
 const { AppError } = require('../middleware/errorHandler');
 const { logAction } = require('../services/audit.service');
 const { sendPush } = require('../services/notification.service');
+const refreshTokenService = require('../services/refreshToken.service');
+const { bodyLimit } = require('../middleware/bodyLimit');
+const { authRateLimit } = require('../middleware/rateLimit');
 
 const router = express.Router();
 
@@ -63,22 +66,10 @@ function assertAuthRuntimeConfig() {
 }
 
 // ── Helper: generate tokens ─────────────────────────────────
+// Delegates to refreshToken.service so every issued pair carries a
+// stable `jti` that the /refresh endpoint can rotate/revoke.
 function generateTokens(user) {
-    const payload = {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        department: user.department,
-        module: user.module,
-        userType: user.userType,
-        appAccess: user.appAccess,
-    };
-    const accessToken = jwt.sign(payload, config.JWT_SECRET, { expiresIn: config.JWT_EXPIRES_IN });
-    const refreshToken = jwt.sign(
-        { id: user.id, role: user.role, type: 'refresh' },
-        config.JWT_SECRET,
-        { expiresIn: config.JWT_REFRESH_EXPIRES_IN },
-    );
+    const { accessToken, refreshToken } = refreshTokenService.issueTokenPair(user);
     return { accessToken, refreshToken };
 }
 
@@ -727,58 +718,69 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
 });
 
 // ── POST /refresh ───────────────────────────────────────────
-router.post('/refresh', validate(refreshSchema), async (req, res, next) => {
-    try {
-        assertAuthRuntimeConfig();
-        const { refreshToken } = req.body;
-        const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
+//
+// Single-use refresh tokens with reuse-revocation. Each call:
+//   1. verifies the JWT
+//   2. checks the `jti` against the Redis revocation set
+//   3. mints a NEW access + refresh pair
+//   4. revokes the old `jti` (TTL = remaining lifetime)
+//
+// Clients MUST replace their stored refresh token with the returned
+// one. If they don't, their next refresh attempt will 401.
+router.post(
+    '/refresh',
+    bodyLimit('8kb'),
+    authRateLimit,
+    validate(refreshSchema),
+    async (req, res, next) => {
+        try {
+            assertAuthRuntimeConfig();
+            const { refreshToken } = req.body;
 
-        if (decoded.type !== 'refresh') {
-            throw new AppError('Invalid refresh token', 401, 'INVALID_TOKEN');
+            const rotated = await refreshTokenService.rotate(refreshToken, async (decoded) => {
+                if (decoded.role === 'STUDENT') {
+                    const student = await prisma.student.findUnique({ where: { id: decoded.id } });
+                    if (!student || !student.isActive) return null;
+                    return mapStudentUserResponse(student);
+                }
+                const admin = await prisma.adminUser.findUnique({ where: { id: decoded.id } });
+                if (!admin || !admin.isActive) return null;
+                return admin;
+            });
+
+            res.json({
+                success: true,
+                data: {
+                    accessToken: rotated.accessToken,
+                    refreshToken: rotated.refreshToken,
+                },
+            });
+        } catch (err) {
+            next(err);
         }
-
-        let user;
-
-        if (decoded.role === 'STUDENT') {
-            // Student refresh — look up in student table
-            const student = await prisma.student.findUnique({ where: { id: decoded.id } });
-            if (!student || !student.isActive) {
-                throw new AppError('Student not found or inactive', 401, 'INVALID_TOKEN');
-            }
-            user = mapStudentUserResponse(student);
-        } else {
-            // Admin/Faculty refresh — look up in adminUser table
-            const admin = await prisma.adminUser.findUnique({ where: { id: decoded.id } });
-            if (!admin || !admin.isActive) {
-                throw new AppError('User not found or inactive', 401, 'INVALID_TOKEN');
-            }
-            user = admin;
-        }
-
-        const tokens = generateTokens(user);
-
-        res.json({
-            success: true,
-            data: { accessToken: tokens.accessToken },
-        });
-    } catch (err) {
-        next(err);
-    }
-});
+    },
+);
 
 // ── POST /logout ────────────────────────────────────────────
-router.post('/logout', authenticate, async (req, res, next) => {
+router.post('/logout', bodyLimit('8kb'), authenticate, async (req, res, next) => {
     try {
         const ipAddress = resolveClientIp(req);
         const deviceContext = resolveDeviceContext(req);
 
-        // Add token to Redis blacklist with 8h TTL
+        // Add access token to Redis blacklist with 8h TTL
         try {
             if (redis && typeof redis.set === 'function') {
                 await redis.set(`blacklist:${req.token}`, '1', 'EX', 8 * 60 * 60);
             }
         } catch (redisErr) {
             console.warn('⚠️ Failed to blacklist token in Redis on logout (skipping):', redisErr.message);
+        }
+
+        // Best-effort refresh-token revocation. Clients SHOULD send the
+        // refresh token on logout; older clients that don't will just
+        // miss this hardening step.
+        if (req.body?.refreshToken) {
+            await refreshTokenService.revoke(req.body.refreshToken).catch(() => { /* best-effort */ });
         }
 
         if (req.user.role === 'STUDENT') {

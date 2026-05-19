@@ -71,6 +71,14 @@ function getGeofencingSettings() {
     return { ...state };
 }
 
+// Lazy require so tests that don't need cache can run standalone.
+let cache;
+function getCache() {
+    if (cache) return cache;
+    try { cache = require('./cache.service'); } catch { cache = null; }
+    return cache;
+}
+
 function updateGeofencingSettings(patch = {}) {
     if (patch.campusCenterLat !== undefined) {
         state.campusCenterLat = clamp(Number(patch.campusCenterLat), -90, 90);
@@ -104,7 +112,13 @@ function updateGeofencingSettings(patch = {}) {
     
     // Persist changes
     saveState();
-    
+
+    // Bust any downstream cache that depends on geofencing geometry.
+    const c = getCache();
+    if (c) {
+        c.invalidatePrefix('exit:activeEvent:').catch(() => { /* best-effort */ });
+    }
+
     return getGeofencingSettings();
 }
 

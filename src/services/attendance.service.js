@@ -208,28 +208,30 @@ async function markAttendance({ sessionId, studentId, gpsLat, gpsLng, overrideBy
         }
     }
 
-    // Check for duplicate
-    const existing = await prisma.attendanceRecord.findUnique({
-        where: { sessionId_studentId: { sessionId, studentId } },
-    });
-    if (existing) {
-        throw new AppError('Student already marked in this session', 409, 'DUPLICATE');
+    // Create record. Rely on the (sessionId, studentId) unique index to
+    // make this race-safe — two concurrent scans both get a clean error
+    // instead of double-marking.
+    try {
+        return await prisma.attendanceRecord.create({
+            data: {
+                sessionId,
+                studentId,
+                method,
+                gpsLat: gpsLat != null ? parseFloat(gpsLat) : null,
+                gpsLng: gpsLng != null ? parseFloat(gpsLng) : null,
+                ...(overrideById && { overrideById, overrideReason }),
+            },
+            include: {
+                student: { select: { id: true, fullName: true, enrollmentNo: true, photoUrl: true } },
+            },
+        });
+    } catch (err) {
+        // Prisma P2002 = unique constraint violation on (sessionId, studentId)
+        if (err?.code === 'P2002') {
+            throw new AppError('Student already marked in this session', 409, 'DUPLICATE');
+        }
+        throw err;
     }
-
-    // Create record
-    return prisma.attendanceRecord.create({
-        data: {
-            sessionId,
-            studentId,
-            method,
-            gpsLat: gpsLat != null ? parseFloat(gpsLat) : null,
-            gpsLng: gpsLng != null ? parseFloat(gpsLng) : null,
-            ...(overrideById && { overrideById, overrideReason }),
-        },
-        include: {
-            student: { select: { id: true, fullName: true, enrollmentNo: true, photoUrl: true } },
-        },
-    });
 }
 
 /**

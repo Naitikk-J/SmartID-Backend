@@ -68,8 +68,41 @@ try { geofencingRoutes = require('./routes/geofencing.routes'); } catch (err) { 
 const app = express();
 
 // ── 1. Security headers ─────────────────────────────────────
+// HSTS only when explicitly behind HTTPS (Vercel terminates TLS).
+//
+// CSP is shipped in REPORT-ONLY mode in production so violations
+// stream to `report-uri` without breaking pages. Flip to enforcing
+// (`contentSecurityPolicy`) once the admin team has confirmed the
+// report stream is empty for a full sprint. Disabled in dev to
+// keep HMR/inspectors quiet.
+const useReportOnlyCsp = process.env.NODE_ENV === 'production' && process.env.CSP_ENABLED !== 'false';
+const cspDirectives = {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'", "'unsafe-inline'"], // Admin app currently inlines bootstrap config.
+    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+    fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+    imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+    connectSrc: ["'self'", 'https:', 'wss:'],
+    frameAncestors: ["'none'"],
+    objectSrc: ["'none'"],
+    baseUri: ["'self'"],
+    formAction: ["'self'"],
+    upgradeInsecureRequests: [],
+};
+if (process.env.CSP_REPORT_URI) cspDirectives.reportUri = [process.env.CSP_REPORT_URI];
+
 app.use(helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: useReportOnlyCsp
+        ? { directives: cspDirectives, reportOnly: true }
+        : false,
+    crossOriginEmbedderPolicy: false, // Allow embedding face-AI iframes / images.
+    hsts: process.env.NODE_ENV === 'production'
+        ? { maxAge: 60 * 60 * 24 * 180, includeSubDomains: true, preload: false }
+        : false,
+    referrerPolicy: { policy: 'no-referrer' },
+    frameguard: { action: 'deny' },
+    hidePoweredBy: true,
+    noSniff: true,
 }));
 
 // ── 2. CORS ──────────────────────────────────────────────────
@@ -133,8 +166,133 @@ app.use((req, res, next) => {
 // ── 6. Health check ─────────────────────────────────────────
 app.get(['/health', '/api/v1/health'], (req, res) => {
     const { getGeofencingSettings } = require('./services/geofencing-settings.service');
-    res.json({ status: 'ok', timestamp: new Date().toISOString(), geofencing: getGeofencingSettings() });
+    const { isRedisUp } = require('./config/redis');
+    const { stats: cacheStats } = require('./services/cache.service');
+    const memory = process.memoryUsage();
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime_s: Math.round(process.uptime()),
+        redis: isRedisUp() ? 'up' : 'down',
+        cache: cacheStats(),
+        memory: {
+            rss_mb: Math.round(memory.rss / 1024 / 1024),
+            heapUsed_mb: Math.round(memory.heapUsed / 1024 / 1024),
+        },
+        geofencing: getGeofencingSettings(),
+    });
 });
+
+// ── 6a. Deep health check — pings every external dependency ─
+app.get(['/health/deep', '/api/v1/health/deep'], async (req, res) => {
+    const checks = await runDeepHealthChecks(2500);
+    const allOk = Object.values(checks).every((c) => c.status === 'ok' || c.status === 'skipped');
+    res.status(allOk ? 200 : 503).json({
+        status: allOk ? 'ok' : 'degraded',
+        timestamp: new Date().toISOString(),
+        checks,
+    });
+});
+
+// ── 6c. Ops metrics (CRON_SECRET-gated) ─────────────────────
+app.get(['/metrics', '/api/v1/metrics'], (req, res) => {
+    const config = require('./config/env');
+    if (config.CRON_SECRET) {
+        const provided = req.headers['x-metrics-token'] || req.query.token;
+        if (provided !== config.CRON_SECRET) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+    }
+
+    const { isRedisUp } = require('./config/redis');
+    const { stats: cacheStats } = require('./services/cache.service');
+    const faceAi = (() => {
+        try { return require('./services/faceAi.service').breaker?.snapshot?.(); }
+        catch { return null; }
+    })();
+    const memory = process.memoryUsage();
+    res.json({
+        timestamp: new Date().toISOString(),
+        uptime_s: Math.round(process.uptime()),
+        node: process.version,
+        pid: process.pid,
+        memory: {
+            rss_mb: Math.round(memory.rss / 1024 / 1024),
+            heapUsed_mb: Math.round(memory.heapUsed / 1024 / 1024),
+            heapTotal_mb: Math.round(memory.heapTotal / 1024 / 1024),
+            external_mb: Math.round(memory.external / 1024 / 1024),
+        },
+        redis: { up: isRedisUp() },
+        cache: cacheStats(),
+        breakers: { faceAi },
+    });
+});
+
+// ── 6b. App-wide general rate limit ─────────────────────────
+try {
+    const { generalRateLimit } = require('./middleware/rateLimit');
+    app.use('/api/', generalRateLimit);
+} catch (err) {
+    logger.warn('General rate limit failed to load — running without it', { message: err.message });
+}
+
+/**
+ * Run health checks against every external dependency with a hard
+ * timeout per check. Returns a `{ name: { status, latency_ms, ... } }`
+ * map and never throws — every error is reported as a check failure.
+ */
+async function runDeepHealthChecks(perCheckTimeoutMs = 2500) {
+    const checks = {};
+    const withTimeout = (label, p) => Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out`)), perCheckTimeoutMs)),
+    ]);
+
+    // Prisma / Mongo
+    {
+        const t0 = Date.now();
+        try {
+            const prisma = require('./config/database');
+            await withTimeout('db', prisma.$runCommandRaw({ ping: 1 }));
+            checks.database = { status: 'ok', latency_ms: Date.now() - t0 };
+        } catch (err) {
+            checks.database = { status: 'down', latency_ms: Date.now() - t0, error: err.message };
+        }
+    }
+
+    // Redis
+    {
+        const t0 = Date.now();
+        try {
+            const { getRedis } = require('./config/redis');
+            const r = getRedis();
+            if (!r) {
+                checks.redis = { status: 'skipped', reason: 'REDIS_URL not configured' };
+            } else {
+                const pong = await withTimeout('redis', r.ping());
+                checks.redis = { status: pong === 'PONG' ? 'ok' : 'down', latency_ms: Date.now() - t0 };
+            }
+        } catch (err) {
+            checks.redis = { status: 'down', latency_ms: Date.now() - t0, error: err.message };
+        }
+    }
+
+    // Face AI (optional — soft fail if not deployed)
+    {
+        const t0 = Date.now();
+        try {
+            const faceAi = require('./services/faceAi.service');
+            await withTimeout('faceAi', faceAi.healthcheck());
+            checks.faceAi = { status: 'ok', latency_ms: Date.now() - t0 };
+        } catch (err) {
+            checks.faceAi = { status: 'down', latency_ms: Date.now() - t0, error: err.message };
+        }
+    }
+
+    return checks;
+}
+// Exposed so tests can hit it directly without a live server.
+app.locals.runDeepHealthChecks = runDeepHealthChecks;
 
 // ── 7. Mount routes ─────────────────────────────────────────
 app.use('/api/v1/auth', authRoutes);
