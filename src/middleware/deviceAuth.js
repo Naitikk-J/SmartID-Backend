@@ -4,7 +4,7 @@
 
 const crypto = require('crypto');
 const prisma = require('../config/database');
-const asyncHandler = require('./asyncHandler');
+const { asyncHandler } = require('./asyncHandler');
 const { AppError } = require('./errorHandler');
 
 /**
