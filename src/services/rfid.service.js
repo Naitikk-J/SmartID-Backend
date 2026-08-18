@@ -423,7 +423,88 @@ async function verifyAccess(readerDbId, readerId, cardUid, eventType, deviceTime
         });
     }
 
-    // 8. Access GRANTED — create transaction + update credential stats
+    // 8. Exit Rules Allowance Check (when eventType is EXIT)
+    const exitService = require('./exit.service');
+    const cooldownService = require('./cooldown.service');
+
+    if (eventType === 'EXIT') {
+        try {
+            const exitCheck = await exitService.checkExitAllowed(user, zone);
+            if (!exitCheck.allowed) {
+                const txn = await createTransaction({
+                    readerId: readerDbId,
+                    credentialId: credential.id,
+                    userId: credential.userId,
+                    cardUid: normalizedUid,
+                    eventType,
+                    accessResult: 'DENIED',
+                    denialReason: 'EXIT_LIMIT_REACHED',
+                    deviceTimestamp,
+                    processingMs: Date.now() - startTime,
+                });
+
+                return {
+                    accessGranted: false,
+                    reason: 'LIMIT_HIT',
+                    message: exitCheck.reason || 'Daily exit limit reached',
+                    exitsUsedToday: exitCheck.used,
+                    exitsAllowedToday: exitCheck.max,
+                    eventId: txn.id,
+                };
+            }
+        } catch (exitErr) {
+            logger.warn('Exit allowance check error (allowing prototype):', exitErr.message);
+        }
+    }
+
+    // 9. Re-entry Cooldown & Anti-Passback Check
+    if (eventType === 'ENTRY' || eventType === 'EXIT') {
+        try {
+            const cooldownCheck = await cooldownService.evaluateReentryCooldown({
+                student: user,
+                direction: eventType,
+                gateId: zone,
+                currentTime: deviceTimestamp ? new Date(deviceTimestamp) : new Date(),
+            });
+
+            if (!cooldownCheck.allowed) {
+                const txn = await createTransaction({
+                    readerId: readerDbId,
+                    credentialId: credential.id,
+                    userId: credential.userId,
+                    cardUid: normalizedUid,
+                    eventType,
+                    accessResult: 'DENIED',
+                    denialReason: cooldownCheck.reason,
+                    deviceTimestamp,
+                    processingMs: Date.now() - startTime,
+                    metadata: {
+                        cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                        cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
+                    },
+                });
+
+                return {
+                    accessGranted: false,
+                    reason: cooldownCheck.reason,
+                    message: cooldownCheck.message,
+                    cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                    cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
+                    eventId: txn.id,
+                };
+            }
+        } catch (cooldownErr) {
+            logger.warn('Re-entry cooldown check error (allowing prototype):', cooldownErr.message);
+        }
+    }
+
+    // 10. Access GRANTED — create transaction + update credential stats
+    // Also record the directional ExitEvent so future cooldowns & counts work.
+    try {
+        await exitService.recordExitEvent(user.id, zone, eventType === 'EXIT' ? 'EXIT' : 'ENTRY', credential.assignedBy);
+    } catch (recErr) {
+        logger.warn('Failed to record exit event for RFID:', recErr.message);
+    }
     // Also create a ScanEvent so the RFID entry appears in the unified
     // live feed / reports / exit-rules alongside QR-based scans.
     const [txn] = await Promise.all([

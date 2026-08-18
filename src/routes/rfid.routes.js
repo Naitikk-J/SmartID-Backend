@@ -578,14 +578,78 @@ router.put('/policies/:id',
     }),
 );
 
-// DELETE /policies/:id — Delete policy
-router.delete('/policies/:id',
+// ── Cooldown & Anti-Passback Settings ───────────────────────────
+
+const cooldownService = require('../services/cooldown.service');
+
+const updateCooldownSchema = z.object({
+    reentryCooldownSeconds: z.number().min(0).max(7200).optional(),
+    stayCooldownSeconds: z.number().min(0).max(3600).optional(),
+    tapDebounceSeconds: z.number().min(1).max(60).optional(),
+    antiPassbackMode: z.enum(['TIMED', 'STRICT', 'DISABLED']).optional(),
+    dayScholarExempt: z.boolean().optional(),
+    allowEmergencyOverride: z.boolean().optional(),
+});
+
+const overrideCooldownSchema = z.object({
+    studentId: z.string().min(1),
+    reason: z.string().optional(),
+});
+
+// GET /cooldown/settings — Get current cooldown configurations
+router.get('/cooldown/settings',
+    authenticate,
+    asyncHandler(async (req, res) => {
+        const settings = cooldownService.getCooldownSettings();
+        res.json({ success: true, settings });
+    }),
+);
+
+// PUT /cooldown/settings — Update cooldown configurations
+router.put('/cooldown/settings',
     authenticate,
     requireRole('SUPER_ADMIN'),
+    validate(updateCooldownSchema),
     asyncHandler(async (req, res) => {
-        await policyService.deletePolicy(req.params.id);
-        res.json({ success: true, message: 'Policy deleted' });
+        const updated = cooldownService.updateCooldownSettings(req.body);
+
+        await logAction(req, {
+            action: 'UPDATE_COOLDOWN_SETTINGS',
+            entity: 'SystemSettings',
+            entityId: 'cooldown-settings',
+            newValue: req.body,
+        });
+
+        res.json({ success: true, settings: updated });
+    }),
+);
+
+// POST /cooldown/override — Grant emergency temporary cooldown bypass
+router.post('/cooldown/override',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'SECURITY_HEAD', 'WARDEN'),
+    validate(overrideCooldownSchema),
+    asyncHandler(async (req, res) => {
+        const result = cooldownService.grantTemporaryOverride(
+            req.body.studentId,
+            req.user.id,
+            req.body.reason || 'Manual Security Override',
+        );
+
+        await logAction(req, {
+            action: 'COOLDOWN_OVERRIDE_GRANTED',
+            entity: 'Student',
+            entityId: req.body.studentId,
+            newValue: { reason: req.body.reason },
+        });
+
+        res.json({
+            success: true,
+            message: 'Temporary 15-minute cooldown override granted',
+            override: result,
+        });
     }),
 );
 
 module.exports = router;
+

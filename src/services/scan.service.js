@@ -65,16 +65,25 @@ function checkGeofence(gpsLat, gpsLng, centerLat, centerLng, radiusMetres) {
 // Badge colour mapping
 const BADGE_MAP = {
     VERIFIED: 'GREEN',
+    GRANTED: 'GREEN',
     FAKE: 'RED',
     LOST: 'AMBER',
     INACTIVE: 'GREY',
     DENIED: 'RED',
     GPS_FAIL: 'RED',
     LIMIT_HIT: 'RED',
+    EXIT_LIMIT_REACHED: 'RED',
     DUPLICATE: 'AMBER',
+    DUPLICATE_TAP: 'AMBER',
     TIME_EXPIRED: 'RED',
     ALREADY_VOTED: 'AMBER',
     ALREADY_ENTERED: 'AMBER',
+    ALREADY_EXITED: 'AMBER',
+    REENTRY_COOLDOWN_ACTIVE: 'AMBER',
+    STAY_COOLDOWN_ACTIVE: 'AMBER',
+    SCAN_COOLDOWN_ACTIVE: 'AMBER',
+    COOLDOWN_ACTIVE: 'AMBER',
+    ANTI_PASSBACK: 'RED',
 };
 
 function resolveDirectionFromScanEvent(scanEvent) {
@@ -290,16 +299,44 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                         message: exitCheck.reason,
                     });
                 }
+
+                // Cooldown & Anti-Passback check for EXIT
+                const cooldownService = require('./cooldown.service');
+                const cooldownCheck = await cooldownService.evaluateReentryCooldown({
+                    student,
+                    direction: 'EXIT',
+                    gateId,
+                });
+
+                if (!cooldownCheck.allowed) {
+                    const event = await logScanEvent({
+                        studentId: student.id,
+                        cardId: card.id,
+                        scannedById: operatorId,
+                        scanType,
+                        gateId,
+                        gpsLat,
+                        gpsLng,
+                        result: cooldownCheck.reason,
+                        metadata: {
+                            cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                            cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
+                        },
+                    });
+                    return buildResult(cooldownCheck.reason, student, event, {
+                        message: cooldownCheck.message,
+                        cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                        cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
+                    });
+                }
+
                 await exitService.recordExitEvent(student.id, gateId, 'EXIT', operatorId);
                 exitInfo = { exitsUsedToday: exitCheck.used + 1, exitsAllowedToday: exitCheck.max };
                 break;
             }
 
             case 'GATE_ENTRY': {
-                // Coordinate concurrent entries (two scanners hitting the same
-                // student in the same second) with a short Redis lock. Falls
-                // through unlocked if Redis is down — we still rely on the
-                // ALREADY_ENTERED check below, which closes 99% of the gap.
+                // Coordinate concurrent entries with a short Redis lock
                 const lockKey = `scan:gate-entry:${student.id}`;
                 const earlyResult = await withLock(
                     lockKey,
@@ -310,12 +347,14 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                 if (earlyResult) return earlyResult;
 
                 async function runGateEntry() {
-                    const lastEvent = await prisma.exitEvent.findFirst({
-                        where: { studentId: student.id, eventTime: { gte: todayStart } },
-                        orderBy: { eventTime: 'desc' },
+                    const cooldownService = require('./cooldown.service');
+                    const cooldownCheck = await cooldownService.evaluateReentryCooldown({
+                        student,
+                        direction: 'ENTRY',
+                        gateId,
                     });
 
-                    if (lastEvent && lastEvent.direction === 'ENTRY') {
+                    if (!cooldownCheck.allowed) {
                         const event = await logScanEvent({
                             studentId: student.id,
                             cardId: card.id,
@@ -324,10 +363,16 @@ async function verifyScan({ rawToken, gpsLat, gpsLng, scanType, operatorId, gate
                             gateId,
                             gpsLat,
                             gpsLng,
-                            result: 'ALREADY_ENTERED',
+                            result: cooldownCheck.reason,
+                            metadata: {
+                                cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                                cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
+                            },
                         });
-                        return buildResult('ALREADY_ENTERED', student, event, {
-                            message: 'Student already entered. Need exit record?',
+                        return buildResult(cooldownCheck.reason, student, event, {
+                            message: cooldownCheck.message,
+                            cooldownSecondsRemaining: cooldownCheck.cooldownSecondsRemaining,
+                            cooldownWindowSeconds: cooldownCheck.cooldownWindowSeconds,
                         });
                     }
 
