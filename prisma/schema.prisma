@@ -811,29 +811,37 @@ enum RfidEventType {
 // ─── RFID Models ────────────────────────────────────────────
 
 model RfidCredential {
-  id              String               @id @default(auto()) @map("_id") @db.ObjectId
-  userId          String               @db.ObjectId
-  cardUid         String               @unique
-  credentialType  String               @default("MIFARE_CLASSIC")
-  status          RfidCredentialStatus  @default(ACTIVE)
-  label           String?              // "Student RFID Card", "Temp Card #12"
-  issuedAt        DateTime             @default(now())
-  expiresAt       DateTime?
-  assignedBy      String?              @db.ObjectId
-  revokedAt       DateTime?
-  revokedBy       String?              @db.ObjectId
-  revokeReason    String?
-  lastUsedAt      DateTime?
-  tapCount        Int                  @default(0)
-  metadata        Json?
+  id                 String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String               @db.ObjectId
+  cardUid            String               @unique
+  printedCardNumber  String?              // Physical card serial number printed on PVC, e.g. "MITS-2026-08492"
+  batchNumber        String?              // Batch grouping for bulk printing, e.g. "BATCH-CSE-2026-A"
+  printStatus        String?              @default("PRINTED") // "PENDING_PRINT", "PRINTED", "REPRINT_REQUESTED"
+  printedAt          DateTime?
+  credentialType     String               @default("MIFARE_CLASSIC")
+  status             RfidCredentialStatus  @default(ACTIVE)
+  label              String?              // "Student RFID Card", "Temp Card #12"
+  issuedAt           DateTime             @default(now())
+  expiresAt          DateTime?
+  assignedBy         String?              @db.ObjectId
+  revokedAt          DateTime?
+  revokedBy          String?              @db.ObjectId
+  revokeReason       String?
+  lastUsedAt         DateTime?
+  tapCount           Int                  @default(0)
+  metadata           Json?
 
-  user            Student              @relation(fields: [userId], references: [id])
-  transactions    RfidTransaction[]
+  user               Student              @relation(fields: [userId], references: [id])
+  transactions       RfidTransaction[]
 
   @@index([userId])
   @@index([status])
   @@index([userId, status])
   @@index([lastUsedAt])
+  @@index([batchNumber])
+  @@index([printedCardNumber])
+  @@index([issuedAt])
+  @@index([status, issuedAt])
   @@map("rfid_credentials")
 }
 

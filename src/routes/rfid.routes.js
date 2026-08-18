@@ -24,9 +24,34 @@ const router = express.Router();
 const assignCredentialSchema = z.object({
     userId: z.string().min(1),
     cardUid: z.string().min(4).max(20),
+    printedCardNumber: z.string().optional(),
+    batchNumber: z.string().optional(),
+    printStatus: z.enum(['PENDING_PRINT', 'PRINTED', 'REPRINT_REQUESTED']).optional(),
     label: z.string().optional(),
     expiresAt: z.string().datetime().optional(),
     credentialType: z.string().optional(),
+});
+
+const bulkAssignSchema = z.object({
+    items: z.array(z.object({
+        enrollmentNo: z.string().min(1),
+        cardUid: z.string().min(4).max(20),
+        printedCardNumber: z.string().optional(),
+        batchNumber: z.string().optional(),
+        label: z.string().optional(),
+        expiresAt: z.string().optional(),
+        credentialType: z.string().optional(),
+    })).min(1).max(2000),
+    batchNumber: z.string().optional(),
+    label: z.string().optional(),
+    expiresAt: z.string().optional(),
+    credentialType: z.string().optional(),
+});
+
+const bulkActionSchema = z.object({
+    credentialIds: z.array(z.string().min(1)).min(1).max(2000),
+    action: z.enum(['REVOKE', 'SUSPEND', 'ACTIVATE', 'MARK_PRINTED', 'REQUEST_REPRINT']),
+    reason: z.string().optional(),
 });
 
 const verifySchema = z.object({
@@ -216,7 +241,7 @@ router.post('/readers/:id/heartbeat',
 
 // ── RFID Credentials ────────────────────────────────────────────
 
-// POST /credentials — Assign RFID card
+// POST /credentials — Assign RFID card (Specific / Individual)
 router.post('/credentials',
     authenticate,
     requireRole('SUPER_ADMIN', 'HOD'),
@@ -227,6 +252,9 @@ router.post('/credentials',
             req.body.cardUid,
             req.user.id,
             {
+                printedCardNumber: req.body.printedCardNumber,
+                batchNumber: req.body.batchNumber,
+                printStatus: req.body.printStatus,
                 label: req.body.label,
                 expiresAt: req.body.expiresAt,
                 credentialType: req.body.credentialType,
@@ -237,10 +265,85 @@ router.post('/credentials',
             action: 'RFID_CREDENTIAL_ASSIGNED',
             entity: 'RfidCredential',
             entityId: credential.id,
-            newValue: { cardUid: credential.cardUid, userId: req.body.userId },
+            newValue: { cardUid: credential.cardUid, userId: req.body.userId, batchNumber: req.body.batchNumber },
         });
 
         res.status(201).json({ success: true, credential });
+    }),
+);
+
+// POST /credentials/bulk-assign — Bulk Assign Printed RFID Cards
+router.post('/credentials/bulk-assign',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    validate(bulkAssignSchema),
+    asyncHandler(async (req, res) => {
+        const results = await rfidService.bulkAssignCredentials(
+            req.body.items,
+            req.user.id,
+            {
+                batchNumber: req.body.batchNumber,
+                label: req.body.label,
+                expiresAt: req.body.expiresAt,
+                credentialType: req.body.credentialType,
+            },
+        );
+
+        await logAction(req, {
+            action: 'RFID_CREDENTIALS_BULK_ASSIGNED',
+            entity: 'RfidCredential',
+            newValue: {
+                totalSuccess: results.totalSuccess,
+                totalFailed: results.totalFailed,
+                batchNumber: req.body.batchNumber,
+            },
+        });
+
+        res.status(201).json({ success: true, results });
+    }),
+);
+
+// POST /credentials/bulk-action — Bulk Action on Cards (Revoke, Suspend, Activate, Mark Printed)
+router.post('/credentials/bulk-action',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    validate(bulkActionSchema),
+    asyncHandler(async (req, res) => {
+        const result = await rfidService.bulkActionCredentials(
+            req.body.credentialIds,
+            req.body.action,
+            req.user.id,
+            req.body.reason,
+        );
+
+        await logAction(req, {
+            action: `RFID_CREDENTIALS_BULK_${req.body.action}`,
+            entity: 'RfidCredential',
+            newValue: { count: result.count, reason: req.body.reason },
+        });
+
+        res.json({ success: true, ...result });
+    }),
+);
+
+// GET /credentials/export — Export CSV formatted for PVC Card Printing Vendors
+router.get('/credentials/export',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    asyncHandler(async (req, res) => {
+        const filters = {
+            status: req.query.status || undefined,
+            batchNumber: req.query.batchNumber || undefined,
+            printStatus: req.query.printStatus || undefined,
+            department: req.query.department || undefined,
+        };
+
+        const csvData = await rfidService.exportCredentialsForPrinting(filters);
+
+        const filename = `mits_rfid_cards_${filters.batchNumber || 'export'}_${new Date().toISOString().split('T')[0]}.csv`;
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(csvData);
     }),
 );
 
@@ -254,6 +357,9 @@ router.get('/credentials',
         const filters = {
             status: req.query.status || undefined,
             userId: req.query.userId || undefined,
+            batchNumber: req.query.batchNumber || undefined,
+            printStatus: req.query.printStatus || undefined,
+            department: req.query.department || undefined,
             search: req.query.search || undefined,
         };
 

@@ -11,15 +11,17 @@ const DUPLICATE_TAP_WINDOW_MS = 5000; // 5 seconds
 // ─── Credential Management ─────────────────────────────────────
 
 /**
- * Assign an RFID card to a student.
+ * Assign an RFID card to a student (Specific / Individual assignment).
  */
 async function assignCredential(userId, cardUid, assignedBy, options = {}) {
+    const normalizedUid = cardUid.toUpperCase().trim();
+
     // Check if card UID is already assigned
     const existingCard = await prisma.rfidCredential.findUnique({
-        where: { cardUid },
+        where: { cardUid: normalizedUid },
     });
     if (existingCard) {
-        const err = new Error('Card UID is already assigned to another user');
+        const err = new Error(`Card UID ${normalizedUid} is already assigned to another user`);
         err.statusCode = 409;
         err.code = 'CARD_ALREADY_ASSIGNED';
         throw err;
@@ -28,7 +30,7 @@ async function assignCredential(userId, cardUid, assignedBy, options = {}) {
     // Check if user exists
     const user = await prisma.student.findUnique({
         where: { id: userId },
-        select: { id: true, fullName: true, enrollmentNo: true },
+        select: { id: true, fullName: true, enrollmentNo: true, department: true },
     });
     if (!user) {
         const err = new Error('Student not found');
@@ -40,15 +42,19 @@ async function assignCredential(userId, cardUid, assignedBy, options = {}) {
     const credential = await prisma.rfidCredential.create({
         data: {
             userId,
-            cardUid: cardUid.toUpperCase(),
-            label: options.label || null,
+            cardUid: normalizedUid,
+            printedCardNumber: options.printedCardNumber ? options.printedCardNumber.trim() : null,
+            batchNumber: options.batchNumber ? options.batchNumber.trim() : null,
+            printStatus: options.printStatus || 'PRINTED',
+            printedAt: options.printStatus === 'PRINTED' ? new Date() : null,
+            label: options.label || 'Student Printed ID Card',
             expiresAt: options.expiresAt ? new Date(options.expiresAt) : null,
             assignedBy,
             credentialType: options.credentialType || 'MIFARE_CLASSIC',
         },
         include: {
             user: {
-                select: { fullName: true, enrollmentNo: true, department: true },
+                select: { fullName: true, enrollmentNo: true, department: true, photoUrl: true, bloodGroup: true },
             },
         },
     });
@@ -57,10 +63,294 @@ async function assignCredential(userId, cardUid, assignedBy, options = {}) {
         credentialId: credential.id,
         userId,
         cardUid: credential.cardUid,
+        printedCardNumber: credential.printedCardNumber,
+        batchNumber: credential.batchNumber,
         assignedBy,
     });
 
     return credential;
+}
+
+/**
+ * Bulk Assign RFID Printed Cards to students from CSV / Batch Array.
+ *
+ * @param {Array<Object>} items - Array of { enrollmentNo, cardUid, printedCardNumber, batchNumber, label, expiresAt }
+ * @param {string} assignedBy - Admin User ID
+ * @param {Object} [globalOptions] - Optional default batchNumber, expiresAt, etc.
+ */
+async function bulkAssignCredentials(items, assignedBy, globalOptions = {}) {
+    if (!Array.isArray(items) || items.length === 0) {
+        const err = new Error('Items array is required and must not be empty');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const results = {
+        total: items.length,
+        totalSuccess: 0,
+        totalFailed: 0,
+        successful: [],
+        failed: [],
+    };
+
+    // 1. Clean & normalize input UIDs and enrollment numbers
+    const cleanItems = items.map((item, index) => ({
+        index: index + 1,
+        enrollmentNo: String(item.enrollmentNo || '').trim(),
+        cardUid: String(item.cardUid || '').toUpperCase().trim(),
+        printedCardNumber: item.printedCardNumber ? String(item.printedCardNumber).trim() : null,
+        batchNumber: (item.batchNumber || globalOptions.batchNumber || null)?.trim(),
+        label: item.label || globalOptions.label || 'Student Printed ID Card',
+        expiresAt: item.expiresAt || globalOptions.expiresAt || null,
+        credentialType: item.credentialType || globalOptions.credentialType || 'MIFARE_CLASSIC',
+    }));
+
+    // 2. Validate input for required fields and internal duplicates
+    const seenUidsInInput = new Set();
+    const seenRollsInInput = new Set();
+    const validItems = [];
+
+    for (const item of cleanItems) {
+        if (!item.enrollmentNo) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: 'Missing enrollmentNo / Roll Number' });
+            continue;
+        }
+        if (!item.cardUid || item.cardUid.length < 4) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: 'Invalid or missing cardUid' });
+            continue;
+        }
+        if (seenUidsInInput.has(item.cardUid)) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: `Duplicate card UID ${item.cardUid} found in import file` });
+            continue;
+        }
+        if (seenRollsInInput.has(item.enrollmentNo.toUpperCase())) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: `Duplicate enrollmentNo ${item.enrollmentNo} in import file` });
+            continue;
+        }
+
+        seenUidsInInput.add(item.cardUid);
+        seenRollsInInput.add(item.enrollmentNo.toUpperCase());
+        validItems.push(item);
+    }
+
+    if (validItems.length === 0) {
+        return results;
+    }
+
+    // 3. Batch lookup existing students by enrollmentNo (single query for performance)
+    const rollList = validItems.map(i => i.enrollmentNo);
+    const students = await prisma.student.findMany({
+        where: {
+            enrollmentNo: { in: rollList, mode: 'insensitive' },
+        },
+        select: { id: true, enrollmentNo: true, fullName: true, department: true },
+    });
+
+    const studentMap = new Map();
+    students.forEach(s => {
+        studentMap.set(s.enrollmentNo.toUpperCase(), s);
+    });
+
+    // 4. Batch lookup existing card UIDs to check collision (single query)
+    const uidList = validItems.map(i => i.cardUid);
+    const existingCards = await prisma.rfidCredential.findMany({
+        where: {
+            cardUid: { in: uidList },
+        },
+        select: { cardUid: true, userId: true },
+    });
+
+    const existingUidSet = new Set(existingCards.map(c => c.cardUid.toUpperCase()));
+
+    // 5. Process assignments
+    for (const item of validItems) {
+        const student = studentMap.get(item.enrollmentNo.toUpperCase());
+        if (!student) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: `Student with Roll Number '${item.enrollmentNo}' not found in system` });
+            continue;
+        }
+
+        if (existingUidSet.has(item.cardUid)) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: `Card UID '${item.cardUid}' is already assigned in database` });
+            continue;
+        }
+
+        try {
+            const credential = await prisma.rfidCredential.create({
+                data: {
+                    userId: student.id,
+                    cardUid: item.cardUid,
+                    printedCardNumber: item.printedCardNumber,
+                    batchNumber: item.batchNumber,
+                    printStatus: 'PRINTED',
+                    printedAt: new Date(),
+                    label: item.label,
+                    expiresAt: item.expiresAt ? new Date(item.expiresAt) : null,
+                    assignedBy,
+                    credentialType: item.credentialType,
+                },
+            });
+
+            results.totalSuccess++;
+            results.successful.push({
+                credentialId: credential.id,
+                enrollmentNo: student.enrollmentNo,
+                studentName: student.fullName,
+                department: student.department,
+                cardUid: credential.cardUid,
+                printedCardNumber: credential.printedCardNumber,
+                batchNumber: credential.batchNumber,
+            });
+        } catch (createErr) {
+            results.totalFailed++;
+            results.failed.push({ ...item, error: createErr.message || 'Database insert error' });
+        }
+    }
+
+    logger.info('Bulk RFID printed card assignment completed', {
+        totalProcessed: results.total,
+        success: results.totalSuccess,
+        failed: results.totalFailed,
+        assignedBy,
+    });
+
+    return results;
+}
+
+/**
+ * Bulk Action on RFID Credentials (Bulk Revoke, Bulk Suspend, Bulk Activate, Bulk Mark Printed).
+ */
+async function bulkActionCredentials(credentialIds, action, actorId, reason) {
+    if (!Array.isArray(credentialIds) || credentialIds.length === 0) {
+        const err = new Error('credentialIds array is required');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    let updateData = {};
+    const now = new Date();
+
+    switch (action) {
+        case 'REVOKE':
+            updateData = {
+                status: 'REVOKED',
+                revokedAt: now,
+                revokedBy: actorId,
+                revokeReason: reason || 'Bulk Revocation',
+            };
+            break;
+        case 'SUSPEND':
+            updateData = { status: 'SUSPENDED' };
+            break;
+        case 'ACTIVATE':
+            updateData = { status: 'ACTIVE' };
+            break;
+        case 'MARK_PRINTED':
+            updateData = { printStatus: 'PRINTED', printedAt: now };
+            break;
+        case 'REQUEST_REPRINT':
+            updateData = { printStatus: 'REPRINT_REQUESTED' };
+            break;
+        default: {
+            const err = new Error(`Unsupported bulk action: ${action}`);
+            err.statusCode = 400;
+            throw err;
+        }
+    }
+
+    const updated = await prisma.rfidCredential.updateMany({
+        where: { id: { in: credentialIds } },
+        data: updateData,
+    });
+
+    logger.info('Bulk RFID credential action executed', {
+        action,
+        count: updated.count,
+        actorId,
+        reason,
+    });
+
+    return { action, count: updated.count };
+}
+
+/**
+ * Export Assigned RFID Credentials formatted for PVC Card Printing Vendors.
+ */
+async function exportCredentialsForPrinting(filters = {}) {
+    const where = {};
+    if (filters.status) where.status = filters.status;
+    if (filters.batchNumber) where.batchNumber = filters.batchNumber;
+    if (filters.printStatus) where.printStatus = filters.printStatus;
+    if (filters.department) where.user = { department: filters.department };
+
+    const credentials = await prisma.rfidCredential.findMany({
+        where,
+        include: {
+            user: {
+                select: {
+                    enrollmentNo: true,
+                    fullName: true,
+                    department: true,
+                    year: true,
+                    bloodGroup: true,
+                    emergencyPhone: true,
+                    photoUrl: true,
+                    studentType: true,
+                },
+            },
+        },
+        orderBy: [{ batchNumber: 'asc' }, { issuedAt: 'desc' }],
+    });
+
+    // Generate CSV output
+    const headers = [
+        'Enrollment Number',
+        'Full Name',
+        'Department',
+        'Year',
+        'Student Type',
+        'Blood Group',
+        'Emergency Phone',
+        'Card UID (Hex)',
+        'Printed Card Serial',
+        'Batch Number',
+        'Print Status',
+        'Card Status',
+        'Issue Date',
+        'Photo URL',
+    ];
+
+    const escapeCsv = (val) => {
+        if (val === null || val === undefined) return '';
+        const str = String(val).replace(/"/g, '""');
+        return `"${str}"`;
+    };
+
+    const rows = credentials.map(c => [
+        escapeCsv(c.user?.enrollmentNo),
+        escapeCsv(c.user?.fullName),
+        escapeCsv(c.user?.department),
+        escapeCsv(c.user?.year),
+        escapeCsv(c.user?.studentType),
+        escapeCsv(c.user?.bloodGroup || 'N/A'),
+        escapeCsv(c.user?.emergencyPhone || 'N/A'),
+        escapeCsv(c.cardUid),
+        escapeCsv(c.printedCardNumber || 'N/A'),
+        escapeCsv(c.batchNumber || 'N/A'),
+        escapeCsv(c.printStatus || 'PRINTED'),
+        escapeCsv(c.status),
+        escapeCsv(c.issuedAt ? new Date(c.issuedAt).toISOString().split('T')[0] : ''),
+        escapeCsv(c.user?.photoUrl || ''),
+    ]);
+
+    const csvContent = [headers.map(h => `"${h}"`).join(','), ...rows.map(r => r.join(','))].join('\r\n');
+    return csvContent;
 }
 
 /**
@@ -702,9 +992,14 @@ async function listCredentials(filters = {}, page = 1, limit = 20) {
     const where = {};
     if (filters.status) where.status = filters.status;
     if (filters.userId) where.userId = filters.userId;
+    if (filters.batchNumber) where.batchNumber = filters.batchNumber;
+    if (filters.printStatus) where.printStatus = filters.printStatus;
+    if (filters.department) where.user = { department: filters.department };
     if (filters.search) {
         where.OR = [
             { cardUid: { contains: filters.search, mode: 'insensitive' } },
+            { printedCardNumber: { contains: filters.search, mode: 'insensitive' } },
+            { batchNumber: { contains: filters.search, mode: 'insensitive' } },
             { user: { fullName: { contains: filters.search, mode: 'insensitive' } } },
             { user: { enrollmentNo: { contains: filters.search, mode: 'insensitive' } } },
         ];
@@ -720,7 +1015,10 @@ async function listCredentials(filters = {}, page = 1, limit = 20) {
                         fullName: true,
                         enrollmentNo: true,
                         department: true,
+                        year: true,
                         studentType: true,
+                        bloodGroup: true,
+                        photoUrl: true,
                     },
                 },
             },
@@ -752,7 +1050,7 @@ async function listTransactions(filters = {}, page = 1, limit = 20) {
             where,
             include: {
                 reader: { select: { readerId: true, deviceName: true, zone: true } },
-                credential: { select: { cardUid: true, status: true } },
+                credential: { select: { cardUid: true, status: true, printedCardNumber: true, batchNumber: true } },
                 user: { select: { fullName: true, enrollmentNo: true, department: true } },
             },
             orderBy: { serverTimestamp: 'desc' },
@@ -769,7 +1067,7 @@ async function getTransactionById(id) {
         where: { id },
         include: {
             reader: { select: { readerId: true, deviceName: true, zone: true, location: true } },
-            credential: { select: { cardUid: true, status: true, label: true } },
+            credential: { select: { cardUid: true, status: true, label: true, printedCardNumber: true, batchNumber: true } },
             user: {
                 select: {
                     fullName: true,
@@ -821,6 +1119,9 @@ async function getStats() {
 
 module.exports = {
     assignCredential,
+    bulkAssignCredentials,
+    bulkActionCredentials,
+    exportCredentialsForPrinting,
     revokeCredential,
     suspendCredential,
     activateCredential,
