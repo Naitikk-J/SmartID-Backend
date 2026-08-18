@@ -183,6 +183,15 @@ const generalRateLimit = buildLimiter({
     keyGen: (req) => req.ip || 'unknown',
 });
 
+// RFID device events: 60 / min per reader (one tap every ~1 second)
+const rfidRateLimit = buildLimiter({
+    prefix: 'rl:rfid',
+    windowMs: ONE_MINUTE,
+    max: 60,
+    message: 'RFID reader rate limit exceeded',
+    keyGen: (req) => req.device?.readerId || req.ip || 'unknown',
+});
+
 module.exports = {
     scanRateLimit,
     loginRateLimit,
@@ -190,6 +199,7 @@ module.exports = {
     writeRateLimit,
     heavyRateLimit,
     generalRateLimit,
+    rfidRateLimit,
     // Exposed for tests
     keyByUserOrIp,
     createRedisStore,

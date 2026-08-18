@@ -57,6 +57,11 @@ const envSchema = z.object({
     // Cron auth token (used by serverless scheduled triggers)
     CRON_SECRET: z.string().optional(),
 
+    // RFID Reader Authentication
+    RFID_DEVICE_SECRET_SALT: z.string().min(16).optional(),
+    RFID_HEARTBEAT_INTERVAL_MS: z.coerce.number().default(30000),
+    RFID_OFFLINE_GRACE_MINUTES: z.coerce.number().default(5),
+
     // Sentry (optional)
     SENTRY_DSN: z.string().optional(),
 });

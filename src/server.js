@@ -77,8 +77,11 @@ if (onServerless) {
         logger.info(`Socket connected: ${socket.user.email} (${socket.user.role})`);
 
         // Join dashboard room for admins
-        if (['SUPER_ADMIN', 'DEPT_ADMIN'].includes(socket.user.role)) {
+        if (['SUPER_ADMIN', 'HOD', 'FACULTY'].includes(socket.user.role)) {
             socket.join('dashboard');
+        }
+        if (['SUPER_ADMIN', 'HOD', 'WARDEN', 'SECURITY_GUARD', 'FACULTY'].includes(socket.user.role)) {
+            socket.join('rfid-dashboard');
         }
 
         socket.on('disconnect', () => {

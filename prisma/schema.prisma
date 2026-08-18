@@ -43,6 +43,8 @@ enum AdminRole {
   FACULTY
   WARDEN
   SECURITY_GUARD
+  HOSTEL_WARDEN
+  EVENT_MANAGER
 }
 
 enum AdminModule {
@@ -57,6 +59,7 @@ enum AdminModule {
 enum AttendanceMethod {
   SCAN
   MANUAL_OVERRIDE
+  RFID
 }
 
 enum AttendanceSessionStatus {
@@ -139,6 +142,8 @@ model Student {
   updatedAt       DateTime     @updatedAt
 
   cards                Card[]
+  rfidCredentials      RfidCredential[]
+  rfidTransactions     RfidTransaction[]
   attendanceRecords    AttendanceRecord[]
   scanEvents           ScanEvent[]
   exitEvents           ExitEvent[]
@@ -770,4 +775,166 @@ model ScanSyncAudit {
   @@index([studentId, createdAt])
   @@index([status, createdAt])
   @@map("scan_sync_audits")
+}
+
+// ─── RFID Enums ─────────────────────────────────────────────
+
+enum RfidCredentialStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+  EXPIRED
+  LOST
+}
+
+enum RfidReaderStatus {
+  ACTIVE
+  MAINTENANCE
+  REVOKED
+  DECOMMISSIONED
+}
+
+enum RfidAccessResult {
+  GRANTED
+  DENIED
+}
+
+enum RfidEventType {
+  ENTRY
+  EXIT
+  ATTENDANCE
+  EVENT_CHECK_IN
+  LIBRARY_CHECK_IN
+  GENERIC_TAP
+}
+
+// ─── RFID Models ────────────────────────────────────────────
+
+model RfidCredential {
+  id              String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String               @db.ObjectId
+  cardUid         String               @unique
+  credentialType  String               @default("MIFARE_CLASSIC")
+  status          RfidCredentialStatus  @default(ACTIVE)
+  label           String?              // "Student RFID Card", "Temp Card #12"
+  issuedAt        DateTime             @default(now())
+  expiresAt       DateTime?
+  assignedBy      String?              @db.ObjectId
+  revokedAt       DateTime?
+  revokedBy       String?              @db.ObjectId
+  revokeReason    String?
+  lastUsedAt      DateTime?
+  tapCount        Int                  @default(0)
+  metadata        Json?
+
+  user            Student              @relation(fields: [userId], references: [id])
+  transactions    RfidTransaction[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([userId, status])
+  @@index([lastUsedAt])
+  @@map("rfid_credentials")
+}
+
+model RfidReader {
+  id              String            @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String            @unique          // e.g., "READER_HOSTEL_GATE_01"
+  deviceName      String                             // "Hostel Main Gate Reader"
+  location        String?                            // "Boys Hostel - Main Entrance"
+  zone            String?                            // "HOSTEL_GATE", "LAB_BLOCK_A", etc.
+  deviceSecret    String                             // plain secret, or encrypted by AES
+  status          RfidReaderStatus  @default(ACTIVE)
+  firmwareVersion String?
+  ipAddress       String?
+  lastHeartbeat   DateTime?
+  isOnline        Boolean           @default(false)
+  capabilities    String[]          @default([])     // ["MIFARE_CLASSIC", "NTAG"]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  registeredBy    String?           @db.ObjectId
+  metadata        Json?
+
+  transactions    RfidTransaction[]
+  heartbeats      DeviceHeartbeat[]
+
+  @@index([status])
+  @@index([zone])
+  @@index([isOnline])
+  @@index([lastHeartbeat])
+  @@map("rfid_readers")
+}
+
+model RfidTransaction {
+  id              String          @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String          @db.ObjectId
+  credentialId    String?         @db.ObjectId
+  userId          String?         @db.ObjectId
+  cardUid         String                          // Always recorded even if unknown
+  eventType       RfidEventType
+  accessResult    RfidAccessResult
+  denialReason    String?
+  deviceTimestamp DateTime                        // Timestamp from ESP32
+  serverTimestamp DateTime        @default(now()) // When backend processed it
+  processingMs    Int?                            // Backend processing latency
+  isOfflineSync   Boolean         @default(false) // Was this queued offline?
+  metadata        Json?
+
+  reader          RfidReader      @relation(fields: [readerId], references: [id])
+  credential      RfidCredential? @relation(fields: [credentialId], references: [id])
+  user            Student?        @relation(fields: [userId], references: [id])
+
+  @@index([serverTimestamp])
+  @@index([readerId, serverTimestamp])
+  @@index([userId, serverTimestamp])
+  @@index([credentialId, serverTimestamp])
+  @@index([accessResult, serverTimestamp])
+  @@index([eventType, serverTimestamp])
+  @@index([cardUid, serverTimestamp])
+  @@index([readerId, eventType, serverTimestamp])
+  @@index([userId, eventType, accessResult, serverTimestamp])
+  @@map("rfid_transactions")
+}
+
+model AccessPolicy {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  name            String                         // "Hostel Boys Gate Access"
+  description     String?
+  roles           String[]  @default([])         // ["STUDENT", "FACULTY"]
+  studentTypes    String[]  @default([])         // ["HOSTELLER_BOYS"]
+  zones           String[]  @default([])         // ["HOSTEL_GATE"]
+  readerIds       String[]  @default([])         // Specific readers (empty = all in zone)
+  allowedDays     Int[]     @default([])         // 1-7 (Mon-Sun), empty = all days
+  allowedStartTime String?                       // "06:00"
+  allowedEndTime  String?                        // "22:00"
+  credentialTypes String[]  @default([])         // ["RFID", "QR"], empty = all
+  priority        Int       @default(0)          // Higher = evaluated first
+  effect          String    @default("ALLOW")    // "ALLOW" or "DENY"
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  createdBy       String?   @db.ObjectId
+
+  @@index([isActive, priority])
+  @@index([zones])
+  @@map("access_policies")
+}
+
+model DeviceHeartbeat {
+  id              String    @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String    @db.ObjectId
+  isOnline        Boolean
+  ipAddress       String?
+  firmwareVersion String?
+  freeHeapBytes   Int?
+  wifiRssi        Int?                            // Signal strength in dBm
+  uptime          Int?                             // Seconds since boot
+  queuedEvents    Int?                             // Offline events pending sync
+  timestamp       DateTime  @default(now())
+
+  reader          RfidReader @relation(fields: [readerId], references: [id])
+
+  @@index([readerId, timestamp])
+  @@index([timestamp])
+  @@map("device_heartbeats")
 }

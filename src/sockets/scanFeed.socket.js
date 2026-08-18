@@ -14,10 +14,16 @@ const sseHub = require('./sseHub');
 
 const BADGE_MAP = {
     VERIFIED: 'GREEN',
+    GRANTED: 'GREEN',
+    RFID_VERIFIED: 'GREEN',
     FAKE: 'RED',
     LOST: 'AMBER',
     INACTIVE: 'GREY',
     DENIED: 'RED',
+    RFID_DENIED: 'RED',
+    RFID_UNKNOWN_CARD: 'RED',
+    RFID_REVOKED: 'AMBER',
+    RFID_EXPIRED: 'AMBER',
     GPS_FAIL: 'RED',
     LIMIT_HIT: 'RED',
     DUPLICATE: 'AMBER',

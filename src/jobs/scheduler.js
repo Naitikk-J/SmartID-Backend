@@ -46,6 +46,20 @@ cron.schedule('0 20 * * *', async () => {
     } catch (err) {
         logger.error('[CRON] Event daily report emails failed:', err);
     }
-}, { timezone: 'Asia/Kolkata' });
+// Every 2 minutes — check for offline RFID readers
+cron.schedule('*/2 * * * *', async () => {
+    try {
+        const { markOfflineReaders } = require('../services/rfidReader.service');
+        const offlineIds = await markOfflineReaders();
+        if (offlineIds.length > 0) {
+            const { emitReaderStatusChange } = require('../sockets/rfidFeed.socket');
+            offlineIds.forEach((readerId) => {
+                emitReaderStatusChange({ readerId, isOnline: false, status: 'OFFLINE' });
+            });
+        }
+    } catch (err) {
+        logger.error('[CRON] Offline reader check failed:', err);
+    }
+});
 
 logger.info('⏰ Scheduled jobs registered');
