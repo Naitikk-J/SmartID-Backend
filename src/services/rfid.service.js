@@ -424,6 +424,8 @@ async function verifyAccess(readerDbId, readerId, cardUid, eventType, deviceTime
     }
 
     // 8. Access GRANTED — create transaction + update credential stats
+    // Also create a ScanEvent so the RFID entry appears in the unified
+    // live feed / reports / exit-rules alongside QR-based scans.
     const [txn] = await Promise.all([
         createTransaction({
             readerId: readerDbId,
@@ -444,6 +446,64 @@ async function verifyAccess(readerDbId, readerId, cardUid, eventType, deviceTime
         }),
     ]);
 
+    // Map RFID eventType → ScanEvent scanType for unified tracking
+    const RFID_TO_SCAN_TYPE = {
+        ENTRY: 'GATE_ENTRY',
+        EXIT: 'GATE_EXIT',
+        ATTENDANCE: 'ATTENDANCE',
+        EVENT_CHECK_IN: 'EVENT',
+        LIBRARY_CHECK_IN: 'LIBRARY',
+        GENERIC_TAP: 'GATE_ENTRY',
+    };
+    const scanType = RFID_TO_SCAN_TYPE[eventType] || 'GATE_ENTRY';
+    const direction = eventType === 'EXIT' ? 'EXIT' : 'ENTRY';
+
+    // Create a ScanEvent so entry is tracked in unified system
+    try {
+        const scanEvent = await prisma.scanEvent.create({
+            data: {
+                studentId: user.id,
+                scanType,
+                result: 'VERIFIED',
+                metadata: {
+                    source: 'RFID',
+                    cardUid: normalizedUid,
+                    readerId,
+                    rfidTransactionId: txn.id,
+                    direction,
+                    event_type: direction,
+                },
+                // ScanEvent requires scannedById (admin user). For RFID
+                // reader-initiated scans we use a system placeholder. If
+                // one isn't available, the field is required so we look
+                // up the first SUPER_ADMIN as fallback.
+                scannedById: credential.assignedBy || await getSystemAdminId(),
+            },
+        });
+
+        // Emit to the main dashboard live feed (same feed as QR scans)
+        try {
+            const { emitScanEvent } = require('../sockets/scanFeed.socket');
+            emitScanEvent({
+                scanEvent: {
+                    id: scanEvent.id,
+                    scannedAt: scanEvent.scannedAt,
+                    gateId: null,
+                    gateName: zone || null,
+                },
+                student: user,
+                scanType,
+                result: 'VERIFIED',
+            });
+        } catch (emitErr) {
+            // Don't fail the card tap if dashboard emit fails
+            logger.warn('Failed to emit RFID scan to main feed:', emitErr.message);
+        }
+    } catch (scanErr) {
+        // Don't block the RFID response if ScanEvent creation fails
+        logger.warn('Failed to create ScanEvent for RFID tap:', scanErr.message);
+    }
+
     return {
         accessGranted: true,
         user: {
@@ -460,6 +520,28 @@ async function verifyAccess(readerDbId, readerId, cardUid, eventType, deviceTime
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
+
+/**
+ * Cache the system admin ID — used as scannedById for RFID-initiated ScanEvents.
+ * RFID scans are device-initiated (no human operator), but ScanEvent requires
+ * a scannedById (AdminUser). We use the first SUPER_ADMIN as a system account.
+ */
+let _cachedSystemAdminId = null;
+async function getSystemAdminId() {
+    if (_cachedSystemAdminId) return _cachedSystemAdminId;
+    const admin = await prisma.adminUser.findFirst({
+        where: { role: 'SUPER_ADMIN' },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+    });
+    if (admin) {
+        _cachedSystemAdminId = admin.id;
+        return admin.id;
+    }
+    // If no admin exists, this will cause the ScanEvent creation to
+    // fail gracefully (it's already inside a try/catch).
+    throw new Error('No SUPER_ADMIN found for RFID system scannedById');
+}
 
 async function createTransaction(data) {
     return prisma.rfidTransaction.create({
