@@ -27,14 +27,15 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
 
 /**
  * Generate QR token for session.
+ * Generates an ultra-compact 24-character token so the QR code uses
+ * Version 1 (21x21 grid) with large, crisp blocks for easy projector scanning from far away.
  */
 function generateSessionQrToken(sessionId, mode, validitySeconds) {
     const timestamp = Date.now();
-    const random = crypto.randomBytes(16).toString('hex');
     const expiresAt = mode === 'DYNAMIC' ? new Date(timestamp + validitySeconds * 1000) : null;
-    const tokenData = { sessionId, timestamp, random, mode, expiresAt };
+    const token = `att_${sessionId.slice(-6)}_${crypto.randomBytes(6).toString('hex')}`;
     return {
-        token: Buffer.from(JSON.stringify(tokenData)).toString('base64url'),
+        token,
         expiresAt,
     };
 }

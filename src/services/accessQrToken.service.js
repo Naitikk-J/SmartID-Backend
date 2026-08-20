@@ -53,23 +53,23 @@ function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds, geofen
     const expSec = nowSec + Math.max(1, Number(ttlSeconds) || 30);
     const normalizedGeofence = normalizeGeofence(geofence);
 
+    // Compact payload: omit nulls and use short nonce to minimize QR code grid density
     const payload = {
-        v: ACCESS_QR_TOKEN_VERSION,
-        typ: 'access_qr',
         gid: String(gateId),
-        gnm: gateName ? String(gateName) : null,
-        cb: createdById ? String(createdById) : null,
-        iat: nowSec,
         exp: expSec,
-        n: crypto.randomBytes(8).toString('hex'),
-        g: normalizedGeofence
+        n: crypto.randomBytes(3).toString('hex'),
+        ...(gateName ? { gnm: String(gateName) } : {}),
+        ...(createdById ? { cb: String(createdById) } : {}),
+        ...(normalizedGeofence
             ? {
-                lat: normalizedGeofence.center_lat,
-                lng: normalizedGeofence.center_lng,
-                r: normalizedGeofence.radius,
-                s: normalizedGeofence.shape,
+                g: {
+                    lat: normalizedGeofence.center_lat,
+                    lng: normalizedGeofence.center_lng,
+                    r: normalizedGeofence.radius,
+                    s: normalizedGeofence.shape,
+                },
             }
-            : null,
+            : {}),
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
@@ -114,7 +114,7 @@ function verifyAccessQrToken(token) {
         return { format: 'stateless', valid: false, reason: 'MALFORMED' };
     }
 
-    if (payload?.typ !== 'access_qr' || !payload?.gid) {
+    if (!payload?.gid) {
         return { format: 'stateless', valid: false, reason: 'MALFORMED' };
     }
 

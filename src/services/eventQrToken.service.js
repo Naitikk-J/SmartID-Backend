@@ -33,15 +33,13 @@ function createEventStayQrToken({ eventId, eventName, createdById, ttlSeconds = 
     const nowSec = Math.floor(Date.now() / 1000);
     const expSec = nowSec + Math.min(180, Math.max(20, Number(ttlSeconds) || 90));
 
+    // Compact payload: omit nulls and shorten nonce to minimize QR code grid density
     const payload = {
-        v: EVENT_STAY_QR_VERSION,
-        typ: 'event_stay_qr',
         eid: String(eventId),
-        enm: eventName ? String(eventName) : null,
-        cb: createdById ? String(createdById) : null,
-        iat: nowSec,
         exp: expSec,
-        n: crypto.randomBytes(8).toString('hex'),
+        n: crypto.randomBytes(3).toString('hex'),
+        ...(eventName ? { enm: String(eventName) } : {}),
+        ...(createdById ? { cb: String(createdById) } : {}),
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
@@ -60,22 +58,17 @@ function createEventMessQrToken({ eventId, mealNumber = null, mealLabel = null, 
 
     if (eventEndsAt instanceof Date && Number.isFinite(eventEndsAt.getTime())) {
         const eventEndSec = Math.floor(eventEndsAt.getTime() / 1000);
-
-        // If event end is in the past (while event record is still active), avoid minting
-        // immediately expired tokens. Event activation checks in scan route still enforce flow.
         if (eventEndSec > nowSec + 60) {
             expSec = eventEndSec;
         }
     }
 
+    // Compact payload
     const payload = {
-        v: EVENT_MESS_QR_VERSION,
-        typ: 'event_mess_qr',
         eid: String(eventId),
-        meal: Number.isInteger(Number(mealNumber)) && Number(mealNumber) > 0 ? Number(mealNumber) : null,
-        mlb: mealLabel ? String(mealLabel) : null,
-        iat: nowSec,
         exp: expSec,
+        ...(Number.isInteger(Number(mealNumber)) && Number(mealNumber) > 0 ? { meal: Number(mealNumber) } : {}),
+        ...(mealLabel ? { mlb: String(mealLabel) } : {}),
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
@@ -136,7 +129,7 @@ function verifyEventQrToken(token) {
     const stayResult = verifySignedToken(EVENT_STAY_QR_VERSION, token);
     if (stayResult.valid) {
         const payload = stayResult.payload || {};
-        if (payload.typ !== 'event_stay_qr' || !payload.eid) {
+        if (!payload.eid) {
             return { format: 'event_stay', valid: false, reason: 'MALFORMED' };
         }
 
@@ -159,7 +152,7 @@ function verifyEventQrToken(token) {
         const maybeMealNumber = Number(payload.meal);
         const mealNumber = Number.isInteger(maybeMealNumber) && maybeMealNumber > 0 ? maybeMealNumber : null;
 
-        if (payload.typ !== 'event_mess_qr' || !payload.eid) {
+        if (!payload.eid) {
             return { format: 'event_mess', valid: false, reason: 'MALFORMED' };
         }
 
