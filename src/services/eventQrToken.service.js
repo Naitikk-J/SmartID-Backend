@@ -43,7 +43,7 @@ function createEventStayQrToken({ eventId, eventName, createdById, ttlSeconds = 
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
-    const signatureSegment = signPayload(payloadSegment);
+    const signatureSegment = signPayload(payloadSegment).slice(0, 12);
 
     return {
         token: `${EVENT_STAY_QR_VERSION}.${payloadSegment}.${signatureSegment}`,
@@ -72,7 +72,7 @@ function createEventMessQrToken({ eventId, mealNumber = null, mealLabel = null, 
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
-    const signatureSegment = signPayload(payloadSegment);
+    const signatureSegment = signPayload(payloadSegment).slice(0, 12);
 
     return {
         token: `${EVENT_MESS_QR_VERSION}.${payloadSegment}.${signatureSegment}`,
@@ -96,7 +96,8 @@ function verifySignedToken(versionPrefix, token) {
     }
 
     const [, payloadSegment, signatureSegment] = segments;
-    const expectedSignature = signPayload(payloadSegment);
+    const fullExpectedSignature = signPayload(payloadSegment);
+    const expectedSignature = fullExpectedSignature.slice(0, signatureSegment.length);
 
     const providedBuffer = Buffer.from(signatureSegment);
     const expectedBuffer = Buffer.from(expectedSignature);

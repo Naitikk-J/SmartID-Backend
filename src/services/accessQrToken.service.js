@@ -73,7 +73,7 @@ function createAccessQrToken({ gateId, gateName, createdById, ttlSeconds, geofen
     };
 
     const payloadSegment = base64UrlEncode(JSON.stringify(payload));
-    const signatureSegment = signPayload(payloadSegment);
+    const signatureSegment = signPayload(payloadSegment).slice(0, 12);
 
     return {
         token: `${ACCESS_QR_TOKEN_VERSION}.${payloadSegment}.${signatureSegment}`,
@@ -97,7 +97,8 @@ function verifyAccessQrToken(token) {
     }
 
     const [, payloadSegment, signatureSegment] = segments;
-    const expectedSignature = signPayload(payloadSegment);
+    const fullExpectedSignature = signPayload(payloadSegment);
+    const expectedSignature = fullExpectedSignature.slice(0, signatureSegment.length);
 
     const providedBuffer = Buffer.from(signatureSegment);
     const expectedBuffer = Buffer.from(expectedSignature);
