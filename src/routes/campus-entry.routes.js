@@ -47,7 +47,7 @@ const router = express.Router();
 
 // ── Helpers ──────────────────────────────────────────────────
 function getStudentDomains() {
-    return String(config.CAMPUS_ENTRY_STUDENT_DOMAIN || 'mitsjwl.ac.in')
+    return String(config.CAMPUS_ENTRY_STUDENT_DOMAIN || 'mitsgwl.ac.in')
         .split(',')
         .map((d) => d.trim().toLowerCase())
         .filter(Boolean);
@@ -109,6 +109,11 @@ const enrollSchema = z.object({
         year: z.coerce.number().int().min(1).max(6).optional(),
         section: z.string().trim().max(10).optional(),
     })).min(1).max(15000),
+    sendEmails: z.boolean().optional().default(true),
+});
+
+const enrollExistingSchema = z.object({
+    studentIds: z.array(z.string().min(1)).min(1).max(15000),
     sendEmails: z.boolean().optional().default(true),
 });
 
@@ -576,6 +581,106 @@ router.post(
 
             await logAction(req, {
                 action: 'CAMPUS_ENTRY_BULK_ENROLL',
+                entity: 'CampusEvent',
+                entityId: enroll.eventId,
+                userId: req.user.id,
+                newValue: { summary: enroll.summary, mailKickoff },
+            }).catch(() => {});
+
+            res.json({
+                success: true,
+                data: {
+                    eventId: enroll.eventId,
+                    summary: enroll.summary,
+                    mailKickoff,
+                },
+            });
+        } catch (err) {
+            next(err);
+        }
+    },
+);
+
+/**
+ * Enrol students that already exist in the Student collection.
+ * Payload is just an array of studentIds — used by the admin UI
+ * "Select from existing students" flow.
+ */
+router.post(
+    '/admin/enroll-existing',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    validate(enrollExistingSchema),
+    async (req, res, next) => {
+        try {
+            const { studentIds, sendEmails } = req.body;
+            const loginUrl = getLoginUrl();
+            const smtpReady = mailService.isSmtpConfigured();
+
+            // Same sync/async fork as /admin/enroll — a few hundred
+            // students is fine to do in-band, thousands must go
+            // background or we blow the HTTP timeout.
+            if (studentIds.length > SYNC_ENROLL_THRESHOLD) {
+                setImmediate(async () => {
+                    try {
+                        const enroll = await campusEntry.enrollExistingStudents(studentIds, {
+                            requestedById: req.user.id,
+                        });
+                        if (sendEmails && smtpReady && enroll.mailerRows.length > 0) {
+                            await mailService.sendCredentialsBatch(enroll.mailerRows, {
+                                loginUrl,
+                                requestedById: req.user.id,
+                                concurrency: 5,
+                            });
+                        }
+                    } catch (err) {
+                        logger.error('[CAMPUS-ENTRY] async enroll-existing failed', { error: err?.message });
+                    }
+                });
+                await logAction(req, {
+                    action: 'CAMPUS_ENTRY_ENROLL_EXISTING_QUEUED',
+                    entity: 'CampusEvent',
+                    entityId: null,
+                    userId: req.user.id,
+                    newValue: { count: studentIds.length, sendEmails },
+                }).catch(() => {});
+                return res.status(202).json({
+                    success: true,
+                    data: {
+                        queued: true,
+                        rows: studentIds.length,
+                        note: 'Enrolling in the background. Watch the counters + Credential Emails tab.',
+                        mailKickoff: sendEmails ? (smtpReady ? 'started' : 'skipped_no_smtp') : 'skipped',
+                    },
+                });
+            }
+
+            const enroll = await campusEntry.enrollExistingStudents(studentIds, {
+                requestedById: req.user.id,
+            });
+
+            let mailKickoff = 'skipped';
+            if (sendEmails && enroll.mailerRows.length > 0) {
+                if (!smtpReady) {
+                    mailKickoff = 'skipped_no_smtp';
+                } else {
+                    mailKickoff = 'started';
+                    setImmediate(() => {
+                        mailService
+                            .sendCredentialsBatch(enroll.mailerRows, {
+                                loginUrl,
+                                requestedById: req.user.id,
+                                concurrency: 5,
+                            })
+                            .catch((err) => logger.warn('[CAMPUS-ENTRY] enroll-existing mailer failed', {
+                                error: err?.message,
+                            }));
+                    });
+                }
+            }
+
+            await logAction(req, {
+                action: 'CAMPUS_ENTRY_ENROLL_EXISTING',
                 entity: 'CampusEvent',
                 entityId: enroll.eventId,
                 userId: req.user.id,

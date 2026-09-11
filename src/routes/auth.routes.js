@@ -65,6 +65,22 @@ function assertAuthRuntimeConfig() {
     }
 }
 
+// ── Admin console allowlist ──────────────────────────────────
+// Server-side gate for admin logins on smartid.naitik.site.
+// Reads ADMIN_ALLOWED_EMAILS (comma-separated) from env at
+// call-time — no restart needed if the caller reloads config.
+// Any admin email not in this list is rejected regardless of
+// what AdminUser rows exist in the database.
+function adminEmailAllowed(email) {
+    if (!email) return false;
+    const raw = String(config.ADMIN_ALLOWED_EMAILS || 'REDACTED');
+    const allowed = raw
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+    return allowed.includes(String(email).trim().toLowerCase());
+}
+
 // ── Helper: generate tokens ─────────────────────────────────
 // Delegates to refreshToken.service so every issued pair carries a
 // stable `jti` that the /refresh endpoint can rotate/revoke.
@@ -545,6 +561,19 @@ router.post('/login', loginRateLimit, validate(loginSchema), async (req, res, ne
 
         let user = await prisma.adminUser.findUnique({ where: { email } });
         let isStudent = false;
+
+        // Admin allowlist gate — enforced BEFORE we run bcrypt so a
+        // brute-force against a stale admin row is impossible.
+        if (user && !adminEmailAllowed(email)) {
+            await logAction(req, {
+                action: 'LOGIN_BLOCKED_NOT_ALLOWLISTED',
+                entity: 'AdminUser',
+                entityId: user.id,
+                userId: user.id,
+                newValue: { email },
+            }).catch(() => { });
+            throw new AppError('This email is not authorised for the admin console.', 403, 'ADMIN_NOT_ALLOWLISTED');
+        }
 
         if (!user) {
             // Check student collection
@@ -1366,6 +1395,24 @@ router.post('/google', loginRateLimit, validate(googleOAuthSchema), async (req, 
         let isStudent = userType === 'STUDENT' || userType === 'EXTERNAL';
         let isSuperAdmin = userType === 'SUPER_ADMIN';
         let isExternal = userType === 'EXTERNAL';
+
+        // Admin console allowlist. Applies to every non-student track
+        // (SUPER_ADMIN, ADMIN, EXTERNAL). Students land on the student
+        // portal via a different flow and are not gated here.
+        if (!isStudent && !adminEmailAllowed(email)) {
+            await logAction(req, {
+                action: 'LOGIN_BLOCKED_NOT_ALLOWLISTED',
+                entity: 'AdminUser',
+                entityId: null,
+                userId: null,
+                newValue: { email, source: 'google' },
+            }).catch(() => { });
+            throw new AppError(
+                'This email is not authorised for the admin console.',
+                403,
+                'ADMIN_NOT_ALLOWLISTED',
+            );
+        }
 
         if (isSuperAdmin || userType === 'ADMIN') {
             const role = isSuperAdmin ? 'SUPER_ADMIN' : 'FACULTY';

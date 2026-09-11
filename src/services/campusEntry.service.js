@@ -304,6 +304,147 @@ async function enrollParticipants(rows, { requestedById } = {}) {
 }
 
 /**
+ * Enrol EXISTING students (already in the Student collection) into
+ * the evergreen event by studentId. Unlike enrollParticipants this
+ * skips the Student upsert — the record already has enrolmentNo,
+ * department, phone, etc. — and only:
+ *   1. Rotates the student's password so the emailed one is authoritative
+ *   2. Creates or updates the EventParticipant row
+ *   3. Clears any prior entry lock so the student can enter fresh
+ */
+async function enrollExistingStudents(studentIds, { requestedById } = {}) {
+    const eventId = await getOrCreateEvergreenEvent();
+    if (!eventId) {
+        throw new Error('Evergreen event not initialised — create a SUPER_ADMIN first.');
+    }
+
+    const uniqueIds = Array.from(new Set(
+        (Array.isArray(studentIds) ? studentIds : [])
+            .map((id) => String(id || '').trim())
+            .filter(Boolean),
+    ));
+
+    const summary = { total: uniqueIds.length, imported: 0, updated: 0, failed: 0, errors: [] };
+    const mailerRows = [];
+
+    if (uniqueIds.length === 0) {
+        return { eventId, summary, mailerRows };
+    }
+
+    // Batch-fetch the students so we don't hit Mongo one row at a time.
+    const students = await prisma.student.findMany({
+        where: { id: { in: uniqueIds } },
+        select: {
+            id: true,
+            email: true,
+            fullName: true,
+            enrollmentNo: true,
+            phone: true,
+            department: true,
+            year: true,
+            section: true,
+        },
+    });
+    const byId = new Map(students.map((s) => [s.id, s]));
+
+    for (const studentId of uniqueIds) {
+        const student = byId.get(studentId);
+        if (!student) {
+            summary.failed += 1;
+            summary.errors.push({ studentId, reason: 'NOT_FOUND' });
+            continue;
+        }
+        if (!student.email) {
+            summary.failed += 1;
+            summary.errors.push({ studentId, reason: 'MISSING_EMAIL' });
+            continue;
+        }
+
+        try {
+            const password = generatePassword(10);
+            const passwordHash = await bcrypt.hash(password, 8);
+
+            await prisma.student.update({
+                where: { id: student.id },
+                data: { passwordHash },
+            });
+
+            const existing = await prisma.eventParticipant.findFirst({
+                where: { eventId, email: student.email },
+                select: { id: true },
+            });
+
+            let participantId;
+            if (existing) {
+                await prisma.eventParticipant.update({
+                    where: { id: existing.id },
+                    data: {
+                        studentId: student.id,
+                        enrollmentNo: student.enrollmentNo,
+                        fullName: student.fullName,
+                        phone: student.phone || undefined,
+                        passwordHint: password,
+                        isActive: true,
+                        credentialsIssuedAt: new Date(),
+                        entryUsedAt: null,
+                        entryScanId: null,
+                        entryScannedById: null,
+                    },
+                });
+                participantId = existing.id;
+                summary.updated += 1;
+            } else {
+                const created = await prisma.eventParticipant.create({
+                    data: {
+                        eventId,
+                        studentId: student.id,
+                        enrollmentNo: student.enrollmentNo,
+                        fullName: student.fullName,
+                        email: student.email,
+                        phone: student.phone || 'N/A',
+                        loginId: student.email,
+                        passwordHint: password,
+                        isActive: true,
+                        credentialsIssuedAt: new Date(),
+                    },
+                    select: { id: true },
+                });
+                participantId = created.id;
+                summary.imported += 1;
+            }
+
+            mailerRows.push({
+                participantId,
+                eventId,
+                studentId: student.id,
+                email: student.email,
+                fullName: student.fullName,
+                loginId: student.email,
+                password,
+                enrollmentNo: student.enrollmentNo,
+            });
+        } catch (err) {
+            summary.failed += 1;
+            summary.errors.push({ studentId, reason: err?.message || 'UNKNOWN' });
+            logger.warn('[CAMPUS-ENTRY] enrollExistingStudents row failed', {
+                studentId,
+                error: err?.message,
+            });
+        }
+    }
+
+    if (summary.imported > 0) {
+        await prisma.campusEvent.update({
+            where: { id: eventId },
+            data: { importedCount: { increment: summary.imported } },
+        }).catch(() => {});
+    }
+
+    logger.info('[CAMPUS-ENTRY] enrollExistingStudents complete', { requestedById, ...summary });
+    return { eventId, summary, mailerRows };
+}
+
+/**
  * Mint a fresh rotating QR for the logged-in student. Fails if the
  * student is not enrolled or is currently entry-locked.
  */
@@ -696,6 +837,7 @@ module.exports = {
     getOrCreateEvergreenEvent,
     generatePassword,
     enrollParticipants,
+    enrollExistingStudents,
     mintQrForStudent,
     verifyAndConsumeQr,
     revokeEntry,

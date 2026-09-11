@@ -63,7 +63,7 @@ const envSchema = z.object({
     // Email domain(s) allowed for Google sign-in on the STUDENT
     // portal. Comma-separated. First one is the "official" one
     // shown on the login page.
-    CAMPUS_ENTRY_STUDENT_DOMAIN: z.string().default('mitsjwl.ac.in'),
+    CAMPUS_ENTRY_STUDENT_DOMAIN: z.string().default('mitsgwl.ac.in'),
     // Rotating student QR TTL. Kept short so a stolen screenshot
     // becomes worthless in seconds. Do NOT surface this to the
     // student UI (spec: no countdown timer).
@@ -75,6 +75,15 @@ const envSchema = z.object({
 
     // Cron auth token (used by serverless scheduled triggers)
     CRON_SECRET: z.string().optional(),
+
+    // ── Admin console allowlist ─────────────────────────────
+    // Comma-separated list of emails permitted to sign in to the
+    // admin console (both /auth/login and /auth/google). Any other
+    // email — even one that lives in AdminUser or matches an
+    // otherwise-allowed corporate domain — is rejected.
+    // Default keeps only the super admin. Add more via env, do NOT
+    // hardcode here.
+    ADMIN_ALLOWED_EMAILS: z.string().default('REDACTED'),
 
     // RFID Reader Authentication
     RFID_DEVICE_SECRET_SALT: z.string().min(16).optional(),
