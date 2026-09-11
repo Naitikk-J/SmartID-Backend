@@ -122,6 +122,16 @@ const revokeSchema = z.object({
     reason: z.string().trim().max(240).optional(),
 });
 
+const revokeBulkSchema = z.object({
+    participantIds: z.array(z.string().min(1)).min(1).max(15000),
+    reason: z.string().trim().max(240).optional(),
+});
+
+const resetDaySchema = z.object({
+    reason: z.string().trim().max(240).optional(),
+    confirm: z.literal(true), // must be true, prevents accidental resets
+});
+
 const resendSchema = z.object({
     participantIds: z.array(z.string()).min(1).max(15000).optional(),
     onlyFailed: z.boolean().optional().default(false),
@@ -757,6 +767,52 @@ router.post(
             res.json({ success: true, data: result });
         } catch (err) {
             if (err?.statusCode) return next(new AppError(err.message, err.statusCode, err.code));
+            next(err);
+        }
+    },
+);
+
+// Bulk-revoke selected participants. Used by the admin "Revoke
+// selected" button on the Entered-students list.
+router.post(
+    '/admin/revoke-bulk',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    validate(revokeBulkSchema),
+    async (req, res, next) => {
+        try {
+            const result = await campusEntry.revokeManyEntries({
+                participantIds: req.body.participantIds,
+                revokedById: req.user.id,
+                reason: req.body.reason || null,
+                req,
+            });
+            res.json({ success: true, data: result });
+        } catch (err) {
+            next(err);
+        }
+    },
+);
+
+// One-shot "reset for next day" — revoke EVERY currently-entered
+// participant so tomorrow the same students can enter again with
+// their existing credentials. Requires { confirm: true } in body
+// so a stray POST doesn't nuke the day.
+router.post(
+    '/admin/reset-day',
+    authenticate,
+    requireRole('SUPER_ADMIN', 'HOD'),
+    validate(resetDaySchema),
+    async (req, res, next) => {
+        try {
+            const result = await campusEntry.revokeManyEntries({
+                all: true,
+                revokedById: req.user.id,
+                reason: req.body.reason || 'Reset for next day',
+                req,
+            });
+            res.json({ success: true, data: result });
+        } catch (err) {
             next(err);
         }
     },

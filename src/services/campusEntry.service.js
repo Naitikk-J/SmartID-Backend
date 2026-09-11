@@ -595,12 +595,20 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
 
     // ─── Winning path ────────────────────────────────────────────
     // The atomic lock is already durable — the student CANNOT enter
-    // again even if the process dies right here. Persisting the
-    // EventStayScan row + backfilling entryScanId is purely for the
-    // admin feed / audit trail, so we do them FIRE-AND-FORGET after
-    // returning the response. Saves ~2 DB round-trips (~100–300ms).
-    setImmediate(() => {
-        prisma.eventStayScan.create({
+    // again even if the process dies right here.
+    //
+    // We MUST await the EventStayScan.create in the request path.
+    // Earlier we used setImmediate(...) to move it off the hot path,
+    // but on Vercel serverless the function container is frozen the
+    // moment `res.json(...)` returns, so the async write silently
+    // dropped — that's why the admin's Live scans feed was empty.
+    //
+    // The `entryScanId` backfill on the participant is only used by
+    // the revoke audit trail, so we omit it here to keep the hot
+    // path at ONE extra round-trip instead of two.
+    let scanRow = null;
+    try {
+        scanRow = await prisma.eventStayScan.create({
             data: {
                 eventId,
                 participantId: participant.id,
@@ -615,26 +623,21 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
                     ...metadata,
                 },
             },
-            select: { id: true },
-        })
-            .then((row) =>
-                prisma.eventParticipant.update({
-                    where: { id: participant.id },
-                    data: { entryScanId: row.id },
-                }).catch(() => { }),
-            )
-            .catch((err) => {
-                logger.warn('[CAMPUS-ENTRY] Async scan persist failed', { error: err.message });
-            });
-    });
+            select: { id: true, scannedAt: true },
+        });
+    } catch (err) {
+        // Persist failure must NOT undo the entry (the lock is already
+        // taken). Log so admins can see it in Vercel function logs.
+        logger.warn('[CAMPUS-ENTRY] EventStayScan persist failed', { error: err.message });
+    }
 
     return {
         ok: true,
         reason: 'ENTRY_RECORDED',
         message: 'Entry recorded.',
         participantId: participant.id,
-        scanId: null, // written asynchronously; admin feed still gets it via socket + 3s refetch
-        scannedAt: now,
+        scanId: scanRow?.id || null,
+        scannedAt: scanRow?.scannedAt || now,
         student: {
             fullName: participant.student?.fullName || participant.fullName,
             enrollmentNo: participant.student?.enrollmentNo || participant.enrollmentNo,
@@ -703,6 +706,67 @@ async function revokeEntry({ participantId, revokedById, reason = null, req = nu
     }
 
     return { ok: true, reason: 'REVOKED', participant: updated };
+}
+
+/**
+ * Bulk revoke — clear the entry lock on many participants at once.
+ * Two modes:
+ *   • participantIds: revoke only those ids that are currently locked.
+ *   • all=true: revoke EVERY currently-entered participant in the
+ *     evergreen event (used by "Reset for next day").
+ *
+ * Uses a single updateMany so N=10 000 completes in one round-trip.
+ * We can't bump entryRevokeCount atomically via updateMany, so we
+ * skip that counter on bulk revokes (the audit log still records
+ * who did it and how many).
+ */
+async function revokeManyEntries({ participantIds = null, all = false, revokedById, reason = null, req = null }) {
+    const eventId = await getOrCreateEvergreenEvent();
+    if (!eventId) {
+        return { ok: true, revoked: 0 };
+    }
+
+    const now = new Date();
+    const where = {
+        eventId,
+        entryUsedAt: { not: null }, // only revoke actually-entered rows
+    };
+    if (all) {
+        // no id filter
+    } else if (Array.isArray(participantIds) && participantIds.length > 0) {
+        where.id = { in: participantIds };
+    } else {
+        return { ok: true, revoked: 0 };
+    }
+
+    const result = await prisma.eventParticipant.updateMany({
+        where,
+        data: {
+            entryUsedAt: null,
+            entryScanId: null,
+            entryScannedById: null,
+            entryRevokedAt: now,
+            entryRevokedById: revokedById || null,
+            entryRevokeReason: reason ? String(reason).slice(0, 240) : (all ? 'Reset for next day' : 'Bulk revoke'),
+        },
+    });
+
+    if (req) {
+        await logAction(req, {
+            action: all ? 'CAMPUS_ENTRY_RESET_DAY' : 'CAMPUS_ENTRY_REVOKE_BULK',
+            entity: 'EventParticipant',
+            entityId: null,
+            userId: revokedById,
+            newValue: {
+                reason,
+                revokedCount: result.count,
+                mode: all ? 'ALL' : 'SELECTED',
+                targetIds: all ? null : participantIds,
+            },
+        }).catch(() => { });
+    }
+
+    return { ok: true, revoked: result.count };
 }
 
 /**
@@ -843,6 +907,7 @@ module.exports = {
     mintQrForStudent,
     verifyAndConsumeQr,
     revokeEntry,
+    revokeManyEntries,
     listScans,
     listParticipants,
 };
