@@ -1,2 +1,14 @@
 node_modules
 .vercel
+
+# ─── Environment / secrets ───────────────────────────────────
+# Never commit real credentials. Ship a `.env.example` with
+# blank/placeholder values if a checked-in template is needed.
+.env
+.env.*
+!.env.example
+
+# Local logs and misc runtime state
+logs
+*.log
+.DS_Store
