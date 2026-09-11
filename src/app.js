@@ -46,6 +46,7 @@ let curfewRoutes;
 let lateReturnRoutes;
 let geofencingRoutes;
 let rfidRoutes;
+let campusEntryRoutes;
 
 try { authRoutes = require('./routes/auth.routes'); } catch (err) { authRoutes = routeFallback('auth', err); }
 try { scanRoutes = require('./routes/scan.routes'); } catch (err) { scanRoutes = routeFallback('scan', err); }
@@ -65,6 +66,7 @@ try { curfewRoutes = require('./routes/curfew.routes'); } catch (err) { curfewRo
 try { lateReturnRoutes = require('./routes/late-return.routes'); } catch (err) { lateReturnRoutes = routeFallback('late-return', err); }
 try { geofencingRoutes = require('./routes/geofencing.routes'); } catch (err) { geofencingRoutes = routeFallback('geofencing', err); }
 try { rfidRoutes = require('./routes/rfid.routes'); } catch (err) { rfidRoutes = routeFallback('rfid', err); }
+try { campusEntryRoutes = require('./routes/campus-entry.routes'); } catch (err) { campusEntryRoutes = routeFallback('campus-entry', err); }
 
 
 const app = express();
@@ -315,6 +317,7 @@ app.use('/api/v1/rules/curfew', curfewRoutes);
 app.use('/api/v1/late-return', lateReturnRoutes);
 app.use('/api/v1/geofencing', geofencingRoutes);
 app.use('/api/v1/rfid', rfidRoutes);
+app.use('/api/v1/campus-entry', campusEntryRoutes);
 
 // ── 8. 404 handler ──────────────────────────────────────────
 app.all('*', (req, res, next) => {

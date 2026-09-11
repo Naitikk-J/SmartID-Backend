@@ -105,41 +105,41 @@ enum ScanSyncStatus {
 // ─── Models ──────────────────────────────────────────────────
 
 model Student {
-  id              String       @id @default(auto()) @map("_id") @db.ObjectId
-  enrollmentNo    String       @unique
-  fullName        String
-  fatherName      String?
-  email           String       @unique
-  phone           String?
-  fatherMobile    String?
-  department      String
-  year            Int          // 1-4
-  section         String?
-  roomNo          String?
-  allottedNo      String?
-  category        String?
-  permanentAddress String?
-  studentType     StudentType
-  userType        UserType     @default(COLLEGE_STUDENT)
-  photoUrl        String?
-  bloodGroup      String?
-  allergies       String[]     @default([])
-  conditions      String[]     @default([])
-  emergencyName   String?
-  emergencyPhone  String?
-  fcmToken        String?
-  linkedDeviceId  String?
-  linkedDeviceLabel String?
+  id                   String      @id @default(auto()) @map("_id") @db.ObjectId
+  enrollmentNo         String      @unique
+  fullName             String
+  fatherName           String?
+  email                String      @unique
+  phone                String?
+  fatherMobile         String?
+  department           String
+  year                 Int // 1-4
+  section              String?
+  roomNo               String?
+  allottedNo           String?
+  category             String?
+  permanentAddress     String?
+  studentType          StudentType
+  userType             UserType    @default(COLLEGE_STUDENT)
+  photoUrl             String?
+  bloodGroup           String?
+  allergies            String[]    @default([])
+  conditions           String[]    @default([])
+  emergencyName        String?
+  emergencyPhone       String?
+  fcmToken             String?
+  linkedDeviceId       String?
+  linkedDeviceLabel    String?
   linkedDevicePlatform String?
-  deviceLinkedAt  DateTime?
-  lastLoginAt     DateTime?
-  lastLogoutAt    DateTime?
-  isActive        Boolean      @default(true)
-  passwordHash    String?
-  googleId        String?
-  googleEmail     String?
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  deviceLinkedAt       DateTime?
+  lastLoginAt          DateTime?
+  lastLogoutAt         DateTime?
+  isActive             Boolean     @default(true)
+  passwordHash         String?
+  googleId             String?
+  googleEmail          String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
 
   cards                Card[]
   rfidCredentials      RfidCredential[]
@@ -171,19 +171,19 @@ model Student {
 }
 
 model Card {
-  id              String      @id @default(auto()) @map("_id") @db.ObjectId
-  studentId       String      @db.ObjectId
-  cardUid         String      @unique
-  qrToken         String      @unique
-  status          CardStatus  @default(ACTIVE)
-  issuedAt        DateTime    @default(now())
+  id              String     @id @default(auto()) @map("_id") @db.ObjectId
+  studentId       String     @db.ObjectId
+  cardUid         String     @unique
+  qrToken         String     @unique
+  status          CardStatus @default(ACTIVE)
+  issuedAt        DateTime   @default(now())
   deactivatedAt   DateTime?
-  deactivatedById String?     @db.ObjectId
+  deactivatedById String?    @db.ObjectId
   notes           String?
 
-  student         Student     @relation(fields: [studentId], references: [id])
-  deactivatedBy   AdminUser?  @relation("DeactivatedCards", fields: [deactivatedById], references: [id])
-  scanEvents      ScanEvent[]
+  student       Student     @relation(fields: [studentId], references: [id])
+  deactivatedBy AdminUser?  @relation("DeactivatedCards", fields: [deactivatedById], references: [id])
+  scanEvents    ScanEvent[]
 
   @@index([studentId])
   @@index([status])
@@ -192,33 +192,33 @@ model Card {
 }
 
 model AdminUser {
-  id              String      @id @default(auto()) @map("_id") @db.ObjectId
-  name            String
-  email           String      @unique
-  passwordHash    String
-  role            AdminRole
-  department      String?
-  module          AdminModule?
-  isActive        Boolean     @default(true)
-  lastLogin       DateTime?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  id           String       @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  email        String       @unique
+  passwordHash String
+  role         AdminRole
+  department   String?
+  module       AdminModule?
+  isActive     Boolean      @default(true)
+  lastLogin    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
-  scannedEvents       ScanEvent[]
-  deactivatedCards    Card[]           @relation("DeactivatedCards")
-  exitRulesUpdated    ExitRule[]
-  exitOverrides       ExitEvent[]      @relation("ExitOverrides")
-  attendanceSessions  AttendanceSession[]
-  attendanceOverrides AttendanceRecord[] @relation("AttendanceOverrides")
-  subjects            Subject[]
-  campusEvents        CampusEvent[]
-  auditLogs           AuditLog[]
-  approvedPinkSlips   PinkSlip[]       @relation("ApprovedPinkSlips")
+  scannedEvents           ScanEvent[]
+  deactivatedCards        Card[]                @relation("DeactivatedCards")
+  exitRulesUpdated        ExitRule[]
+  exitOverrides           ExitEvent[]           @relation("ExitOverrides")
+  attendanceSessions      AttendanceSession[]
+  attendanceOverrides     AttendanceRecord[]    @relation("AttendanceOverrides")
+  subjects                Subject[]
+  campusEvents            CampusEvent[]
+  auditLogs               AuditLog[]
+  approvedPinkSlips       PinkSlip[]            @relation("ApprovedPinkSlips")
   processedRebindRequests DeviceRebindRequest[] @relation("ProcessedRebindRequests")
-  acknowledgedLateReturns LateReturnRequest[] @relation("AcknowledgedLateReturns")
-  classLists          SessionClassList[]
-  gateId              String?      @db.ObjectId
-  gate                Gate?        @relation(fields: [gateId], references: [id])
+  acknowledgedLateReturns LateReturnRequest[]   @relation("AcknowledgedLateReturns")
+  classLists              SessionClassList[]
+  gateId                  String?               @db.ObjectId
+  gate                    Gate?                 @relation(fields: [gateId], references: [id])
 
   @@index([role])
   @@index([role, isActive])
@@ -228,15 +228,15 @@ model AdminUser {
 }
 
 model Gate {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
-  name       String
-  location   String?
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  location  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
 
-  scanEvents  ScanEvent[]
-  exitEvents  ExitEvent[]
-  admins      AdminUser[]
+  scanEvents ScanEvent[]
+  exitEvents ExitEvent[]
+  admins     AdminUser[]
 
   @@map("gates")
 }
@@ -254,10 +254,10 @@ model ScanEvent {
   metadata    Json?
   scannedAt   DateTime @default(now())
 
-  student     Student?  @relation(fields: [studentId], references: [id])
-  card        Card?     @relation(fields: [cardId], references: [id])
-  scannedBy   AdminUser @relation(fields: [scannedById], references: [id])
-  gate        Gate?     @relation(fields: [gateId], references: [id])
+  student   Student?  @relation(fields: [studentId], references: [id])
+  card      Card?     @relation(fields: [cardId], references: [id])
+  scannedBy AdminUser @relation(fields: [scannedById], references: [id])
+  gate      Gate?     @relation(fields: [gateId], references: [id])
 
   @@index([scannedAt])
   @@index([studentId, scannedAt])
@@ -267,19 +267,18 @@ model ScanEvent {
   @@index([gateId, scannedAt])
   @@index([cardId, scannedAt])
   @@index([studentId, scanType, result, scannedAt])
-
   @@map("scan_events")
 }
 
 model ExitRule {
   id          String      @id @default(auto()) @map("_id") @db.ObjectId
   studentType StudentType
-  dayOfWeek   Int         // 1=Mon ... 7=Sun
+  dayOfWeek   Int // 1=Mon ... 7=Sun
   maxExits    Int
   updatedById String?     @db.ObjectId
   updatedAt   DateTime    @default(now()) @updatedAt
 
-  updatedBy   AdminUser?  @relation(fields: [updatedById], references: [id])
+  updatedBy AdminUser? @relation(fields: [updatedById], references: [id])
 
   @@unique([studentType, dayOfWeek])
   @@map("exit_rules")
@@ -288,8 +287,8 @@ model ExitRule {
 model CurfewRule {
   id          String      @id @default(auto()) @map("_id") @db.ObjectId
   studentType StudentType
-  startTime   String      // e.g., "21:00"
-  endTime     String      // e.g., "06:00"
+  startTime   String // e.g., "21:00"
+  endTime     String // e.g., "06:00"
   isActive    Boolean     @default(true)
   updatedAt   DateTime    @updatedAt
 
@@ -307,9 +306,9 @@ model ExitEvent {
   eventTime    DateTime      @default(now())
   overrideById String?       @db.ObjectId
 
-  student      Student       @relation(fields: [studentId], references: [id])
-  gate         Gate?         @relation(fields: [gateId], references: [id])
-  overrideBy   AdminUser?    @relation("ExitOverrides", fields: [overrideById], references: [id])
+  student    Student    @relation(fields: [studentId], references: [id])
+  gate       Gate?      @relation(fields: [gateId], references: [id])
+  overrideBy AdminUser? @relation("ExitOverrides", fields: [overrideById], references: [id])
 
   @@index([studentId, eventTime])
   @@index([direction, eventTime])
@@ -318,35 +317,35 @@ model ExitEvent {
 }
 
 model CampusEvent {
-  id          String     @id @default(auto()) @map("_id") @db.ObjectId
-  name        String
-  description String?
-  isStayHostel Boolean   @default(false)
-  hostelGateLabel String?
-  reportRecipients String[] @default([])
-  timezone    String     @default("Asia/Kolkata")
-  importedCount Int      @default(0)
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  name                   String
+  description            String?
+  isStayHostel           Boolean  @default(false)
+  hostelGateLabel        String?
+  reportRecipients       String[] @default([])
+  timezone               String   @default("Asia/Kolkata")
+  importedCount          Int      @default(0)
   maxMealsPerParticipant Int?
-  dayWiseMealLimits Json?
-  messSharedQrToken String?
-  stayQrToken String? // static stay qr
-  messQrToken String? // static mess qr
-  eventDate   DateTime
-  startTime   DateTime
-  endTime     DateTime
-  exitMode    ExitMode   @default(SINGLE)
-  customMax   Int?
-  appliesTo   String[]   @default(["ALL"])
-  gateIds     String[]   @default([])
-  isActive    Boolean    @default(true)
-  createdById String     @db.ObjectId
-  createdAt   DateTime   @default(now())
+  dayWiseMealLimits      Json?
+  messSharedQrToken      String?
+  stayQrToken            String? // static stay qr
+  messQrToken            String? // static mess qr
+  eventDate              DateTime
+  startTime              DateTime
+  endTime                DateTime
+  exitMode               ExitMode @default(SINGLE)
+  customMax              Int?
+  appliesTo              String[] @default(["ALL"])
+  gateIds                String[] @default([])
+  isActive               Boolean  @default(true)
+  createdById            String   @db.ObjectId
+  createdAt              DateTime @default(now())
 
-  createdBy   AdminUser  @relation(fields: [createdById], references: [id])
+  createdBy    AdminUser          @relation(fields: [createdById], references: [id])
   participants EventParticipant[]
-  stayScans   EventStayScan[]
-  messRules   EventMessRule[]
-  mealScans   EventMealScan[]
+  stayScans    EventStayScan[]
+  messRules    EventMessRule[]
+  mealScans    EventMealScan[]
 
   @@index([isActive, startTime, endTime])
   @@index([eventDate])
@@ -355,48 +354,86 @@ model CampusEvent {
 }
 
 model EventParticipant {
-  id                 String      @id @default(auto()) @map("_id") @db.ObjectId
-  eventId            String      @db.ObjectId
-  studentId          String?     @db.ObjectId
-  enrollmentNo       String?
-  fullName           String
-  email              String
-  phone              String
-  loginId            String
-  passwordHint       String?
-  maxMealsAllowed    Int?
-  mealsConsumed      Int?
-  isActive           Boolean     @default(true)
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  eventId             String    @db.ObjectId
+  studentId           String?   @db.ObjectId
+  enrollmentNo        String?
+  fullName            String
+  email               String
+  phone               String
+  loginId             String
+  passwordHint        String?
+  maxMealsAllowed     Int?
+  mealsConsumed       Int?
+  isActive            Boolean   @default(true)
   credentialsIssuedAt DateTime?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
 
-  event              CampusEvent @relation(fields: [eventId], references: [id])
-  student            Student?    @relation(fields: [studentId], references: [id])
-  stayScans          EventStayScan[]
-  mealScans          EventMealScan[]
+  // ─── Campus-Entry single-entry lock (only admin can revoke) ───
+  // Set atomically when a valid QR is consumed by a scanner. While
+  // non-null, the participant CANNOT enter again. An admin revoke
+  // clears entryUsedAt and records the revoke metadata for audit.
+  entryUsedAt       DateTime?
+  entryScanId       String?   @db.ObjectId
+  entryScannedById  String?   @db.ObjectId
+  entryRevokedAt    DateTime?
+  entryRevokedById  String?   @db.ObjectId
+  entryRevokeReason String?
+  entryRevokeCount  Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  event     CampusEvent     @relation(fields: [eventId], references: [id])
+  student   Student?        @relation(fields: [studentId], references: [id])
+  stayScans EventStayScan[]
+  mealScans EventMealScan[]
 
   @@index([eventId, email])
   @@index([eventId, loginId])
   @@index([studentId])
+  @@index([eventId, entryUsedAt])
   @@map("event_participants")
 }
 
+// ─── Credential email delivery tracking (per bulk-import send) ───
+// Records every outbound "here is your login and password" email so
+// admins can see failures and resend to just the failed recipients.
+model CredentialEmailStatus {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  participantId String    @db.ObjectId
+  eventId       String    @db.ObjectId
+  studentId     String?   @db.ObjectId
+  email         String
+  status        String // "QUEUED" | "SENT" | "FAILED"
+  attempts      Int       @default(0)
+  lastError     String?
+  lastAttemptAt DateTime?
+  sentAt        DateTime?
+  requestedById String?   @db.ObjectId
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([eventId, status])
+  @@index([participantId])
+  @@index([status, createdAt])
+  @@map("credential_email_statuses")
+}
+
 model EventStayScan {
-  id            String            @id @default(auto()) @map("_id") @db.ObjectId
-  eventId       String            @db.ObjectId
-  participantId String?           @db.ObjectId
-  studentId     String?           @db.ObjectId
+  id            String        @id @default(auto()) @map("_id") @db.ObjectId
+  eventId       String        @db.ObjectId
+  participantId String?       @db.ObjectId
+  studentId     String?       @db.ObjectId
   direction     ExitDirection
-  scanMode      String            @default("DYNAMIC_QR")
+  scanMode      String        @default("DYNAMIC_QR")
   gateLabel     String?
-  result        String            @default("VERIFIED")
-  scannedAt     DateTime          @default(now())
+  result        String        @default("VERIFIED")
+  scannedAt     DateTime      @default(now())
   metadata      Json?
 
-  event         CampusEvent       @relation(fields: [eventId], references: [id])
-  participant   EventParticipant? @relation(fields: [participantId], references: [id])
-  student       Student?          @relation(fields: [studentId], references: [id])
+  event       CampusEvent       @relation(fields: [eventId], references: [id])
+  participant EventParticipant? @relation(fields: [participantId], references: [id])
+  student     Student?          @relation(fields: [studentId], references: [id])
 
   @@index([eventId, scannedAt])
   @@index([participantId, scannedAt])
@@ -405,19 +442,19 @@ model EventStayScan {
 }
 
 model EventMessRule {
-  id         String       @id @default(auto()) @map("_id") @db.ObjectId
-  eventId    String       @db.ObjectId
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  eventId    String   @db.ObjectId
   mealNumber Int
   mealLabel  String
   startTime  String
   endTime    String
-  isActive   Boolean      @default(true)
+  isActive   Boolean  @default(true)
   qrToken    String?
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  event      CampusEvent  @relation(fields: [eventId], references: [id])
-  mealScans  EventMealScan[]
+  event     CampusEvent     @relation(fields: [eventId], references: [id])
+  mealScans EventMealScan[]
 
   @@unique([eventId, mealNumber])
   @@index([eventId, isActive])
@@ -425,20 +462,20 @@ model EventMessRule {
 }
 
 model EventMealScan {
-  id            String            @id @default(auto()) @map("_id") @db.ObjectId
-  eventId       String            @db.ObjectId
-  participantId String?           @db.ObjectId
-  studentId     String?           @db.ObjectId
-  mealRuleId    String?           @db.ObjectId
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  eventId       String   @db.ObjectId
+  participantId String?  @db.ObjectId
+  studentId     String?  @db.ObjectId
+  mealRuleId    String?  @db.ObjectId
   mealNumber    Int
   mealLabel     String
-  scannedAt     DateTime          @default(now())
+  scannedAt     DateTime @default(now())
   metadata      Json?
 
-  event         CampusEvent       @relation(fields: [eventId], references: [id])
-  participant   EventParticipant? @relation(fields: [participantId], references: [id])
-  student       Student?          @relation(fields: [studentId], references: [id])
-  mealRule      EventMessRule?    @relation(fields: [mealRuleId], references: [id])
+  event       CampusEvent       @relation(fields: [eventId], references: [id])
+  participant EventParticipant? @relation(fields: [participantId], references: [id])
+  student     Student?          @relation(fields: [studentId], references: [id])
+  mealRule    EventMessRule?    @relation(fields: [mealRuleId], references: [id])
 
   @@index([eventId, scannedAt])
   @@index([participantId, scannedAt])
@@ -448,16 +485,16 @@ model EventMealScan {
 }
 
 model Subject {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  code        String   @unique
-  name        String
-  department  String
-  semester    Int
-  facultyId   String   @db.ObjectId
-  createdAt   DateTime @default(now())
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  code       String   @unique
+  name       String
+  department String
+  semester   Int
+  facultyId  String   @db.ObjectId
+  createdAt  DateTime @default(now())
 
-  faculty     AdminUser           @relation(fields: [facultyId], references: [id])
-  timetableSlots TimetableSlot[]
+  faculty            AdminUser           @relation(fields: [facultyId], references: [id])
+  timetableSlots     TimetableSlot[]
   attendanceSessions AttendanceSession[]
 
   @@map("subjects")
@@ -474,7 +511,7 @@ model TimetableSlot {
   gpsLng          Float?
   gpsRadiusMetres Int      @default(50)
 
-  subject         Subject  @relation(fields: [subjectId], references: [id])
+  subject Subject @relation(fields: [subjectId], references: [id])
 
   @@map("timetable_slots")
 }
@@ -494,10 +531,10 @@ model AttendanceSession {
   startedAt         DateTime                @default(now())
   closedAt          DateTime?
 
-  subject         Subject                 @relation(fields: [subjectId], references: [id])
-  faculty         AdminUser               @relation(fields: [facultyId], references: [id])
-  classList       SessionClassList?       @relation(fields: [classListId], references: [id])
-  records         AttendanceRecord[]
+  subject   Subject            @relation(fields: [subjectId], references: [id])
+  faculty   AdminUser          @relation(fields: [facultyId], references: [id])
+  classList SessionClassList?  @relation(fields: [classListId], references: [id])
+  records   AttendanceRecord[]
 
   @@index([facultyId, status, startedAt])
   @@index([qrToken])
@@ -505,19 +542,19 @@ model AttendanceSession {
 }
 
 model SessionClassList {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  name        String
-  department  String
-  year        Int?
-  section     String?
-  studentIds  String[] @db.ObjectId
-  facultyId   String   @db.ObjectId
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  name       String
+  department String
+  year       Int?
+  section    String?
+  studentIds String[] @db.ObjectId
+  facultyId  String   @db.ObjectId
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  faculty     AdminUser           @relation(fields: [facultyId], references: [id])
-  sessions    AttendanceSession[]
+  faculty  AdminUser           @relation(fields: [facultyId], references: [id])
+  sessions AttendanceSession[]
 
   @@index([facultyId])
   @@index([department, year])
@@ -525,19 +562,19 @@ model SessionClassList {
 }
 
 model AttendanceRecord {
-  id              String           @id @default(auto()) @map("_id") @db.ObjectId
-  sessionId       String           @db.ObjectId
-  studentId       String           @db.ObjectId
-  method          AttendanceMethod @default(SCAN)
-  gpsLat          Float?
-  gpsLng          Float?
-  overrideById    String?          @db.ObjectId
-  overrideReason  String?
-  markedAt        DateTime         @default(now())
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId      String           @db.ObjectId
+  studentId      String           @db.ObjectId
+  method         AttendanceMethod @default(SCAN)
+  gpsLat         Float?
+  gpsLng         Float?
+  overrideById   String?          @db.ObjectId
+  overrideReason String?
+  markedAt       DateTime         @default(now())
 
-  session         AttendanceSession @relation(fields: [sessionId], references: [id])
-  student         Student           @relation(fields: [studentId], references: [id])
-  overrideBy      AdminUser?        @relation("AttendanceOverrides", fields: [overrideById], references: [id])
+  session    AttendanceSession @relation(fields: [sessionId], references: [id])
+  student    Student           @relation(fields: [studentId], references: [id])
+  overrideBy AdminUser?        @relation("AttendanceOverrides", fields: [overrideById], references: [id])
 
   @@unique([sessionId, studentId])
   @@index([sessionId, markedAt])
@@ -555,22 +592,22 @@ model Book {
   availableCopies Int      @default(1)
   createdAt       DateTime @default(now())
 
-  transactions    LibraryTransaction[]
+  transactions LibraryTransaction[]
 
   @@map("books")
 }
 
 model LibraryTransaction {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  studentId   String   @db.ObjectId
-  bookId      String   @db.ObjectId
-  issuedAt    DateTime @default(now())
-  dueAt       DateTime
-  returnedAt  DateTime?
-  fineAmount  Float    @default(0)
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  studentId  String    @db.ObjectId
+  bookId     String    @db.ObjectId
+  issuedAt   DateTime  @default(now())
+  dueAt      DateTime
+  returnedAt DateTime?
+  fineAmount Float     @default(0)
 
-  student     Student  @relation(fields: [studentId], references: [id])
-  book        Book     @relation(fields: [bookId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+  book    Book    @relation(fields: [bookId], references: [id])
 
   @@index([studentId])
   @@index([bookId])
@@ -588,37 +625,37 @@ model Election {
   isPublished Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  votes       Vote[]
+  votes Vote[]
 
   @@map("elections")
 }
 
 model Vote {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  electionId  String   @db.ObjectId
-  studentId   String   @db.ObjectId
-  candidate   String
-  votedAt     DateTime @default(now())
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  electionId String   @db.ObjectId
+  studentId  String   @db.ObjectId
+  candidate  String
+  votedAt    DateTime @default(now())
 
-  election    Election @relation(fields: [electionId], references: [id])
-  student     Student  @relation(fields: [studentId], references: [id])
+  election Election @relation(fields: [electionId], references: [id])
+  student  Student  @relation(fields: [studentId], references: [id])
 
   @@unique([electionId, studentId])
   @@map("votes")
 }
 
 model AuditLog {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  actorId     String   @db.ObjectId
-  action      String
-  entity      String
-  entityId    String?
-  oldValue    Json?
-  newValue    Json?
-  ipAddress   String?
-  loggedAt    DateTime @default(now())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  actorId   String   @db.ObjectId
+  action    String
+  entity    String
+  entityId  String?
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  loggedAt  DateTime @default(now())
 
-  actor       AdminUser @relation(fields: [actorId], references: [id])
+  actor AdminUser @relation(fields: [actorId], references: [id])
 
   @@index([loggedAt])
   @@index([actorId, loggedAt])
@@ -628,24 +665,24 @@ model AuditLog {
 }
 
 model StudentAuthLog {
-  id               String    @id @default(auto()) @map("_id") @db.ObjectId
-  studentId        String?   @db.ObjectId
-  studentEmail     String?
-  enrollmentNo     String?
-  action           String
-  status           String    @default("SUCCESS")
-  reason           String?
-  deviceId         String?
-  deviceLabel      String?
-  devicePlatform   String?
-  linkedStudentId  String?   @db.ObjectId
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  studentId          String?  @db.ObjectId
+  studentEmail       String?
+  enrollmentNo       String?
+  action             String
+  status             String   @default("SUCCESS")
+  reason             String?
+  deviceId           String?
+  deviceLabel        String?
+  devicePlatform     String?
+  linkedStudentId    String?  @db.ObjectId
   linkedEnrollmentNo String?
-  ipAddress        String?
-  userAgent        String?
-  metadata         Json?
-  createdAt        DateTime  @default(now())
+  ipAddress          String?
+  userAgent          String?
+  metadata           Json?
+  createdAt          DateTime @default(now())
 
-  student          Student?  @relation(fields: [studentId], references: [id])
+  student Student? @relation(fields: [studentId], references: [id])
 
   @@index([studentId, createdAt])
   @@index([deviceId, createdAt])
@@ -656,21 +693,21 @@ model StudentAuthLog {
 }
 
 model DeviceRebindRequest {
-  id               String               @id @default(auto()) @map("_id") @db.ObjectId
-  studentId        String               @db.ObjectId
-  currentDeviceId  String?
+  id                String              @id @default(auto()) @map("_id") @db.ObjectId
+  studentId         String              @db.ObjectId
+  currentDeviceId   String?
   requestedDeviceId String
-  requestedLabel   String?
+  requestedLabel    String?
   requestedPlatform String?
-  reason           String?
-  status           RebindRequestStatus  @default(PENDING)
-  requestedAt      DateTime             @default(now())
-  processedAt      DateTime?
-  processedById    String?              @db.ObjectId
-  adminNote        String?
+  reason            String?
+  status            RebindRequestStatus @default(PENDING)
+  requestedAt       DateTime            @default(now())
+  processedAt       DateTime?
+  processedById     String?             @db.ObjectId
+  adminNote         String?
 
-  student          Student              @relation(fields: [studentId], references: [id])
-  processedBy      AdminUser?           @relation("ProcessedRebindRequests", fields: [processedById], references: [id])
+  student     Student    @relation(fields: [studentId], references: [id])
+  processedBy AdminUser? @relation("ProcessedRebindRequests", fields: [processedById], references: [id])
 
   @@index([studentId, status, requestedAt])
   @@index([requestedDeviceId, status, requestedAt])
@@ -679,38 +716,37 @@ model DeviceRebindRequest {
 }
 
 model FaceData {
-  id              String       @id @default(auto()) @map("_id") @db.ObjectId
-  studentId       String       @unique @db.ObjectId
-  faceEmbeddings  Float[]      // Array of 128-dimensional face embeddings (flattened from multiple captures)
-  faceImages      String[]     // Base64-encoded face capture images (max 3)
-  qualityScore    Float        // Average quality across all captures (0-100)
-  enrolledAt      DateTime     @default(now())
-  enrolledBy      String?      @db.ObjectId // AdminUser who registered the face
-  lastMatchedAt   DateTime?
-  matchCount      Int          @default(0)
-  isActive        Boolean      @default(true)
-  updatedAt       DateTime     @updatedAt
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  studentId      String    @unique @db.ObjectId
+  faceEmbeddings Float[] // Array of 128-dimensional face embeddings (flattened from multiple captures)
+  faceImages     String[] // Base64-encoded face capture images (max 3)
+  qualityScore   Float // Average quality across all captures (0-100)
+  enrolledAt     DateTime  @default(now())
+  enrolledBy     String?   @db.ObjectId // AdminUser who registered the face
+  lastMatchedAt  DateTime?
+  matchCount     Int       @default(0)
+  isActive       Boolean   @default(true)
+  updatedAt      DateTime  @updatedAt
 
-  student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@map("face_data")
 }
 
 model FaceDetectionLog {
-  id              String       @id @default(auto()) @map("_id") @db.ObjectId
-  studentId       String       @db.ObjectId
-  direction       String       // ENTRY or EXIT
-  confidence      Float        // Match confidence percentage (0-100)
-  timestamp       DateTime     @default(now())
-  source          String?      // Camera or gate ID
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  studentId  String   @db.ObjectId
+  direction  String // ENTRY or EXIT
+  confidence Float // Match confidence percentage (0-100)
+  timestamp  DateTime @default(now())
+  source     String? // Camera or gate ID
 
-  student         Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@index([timestamp])
   @@index([studentId, timestamp])
   @@index([direction, timestamp])
   @@index([studentId, direction, timestamp])
-
   @@map("face_detection_logs")
 }
 
@@ -726,8 +762,8 @@ model PinkSlip {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  student      Student        @relation(fields: [studentId], references: [id])
-  approvedBy   AdminUser?     @relation("ApprovedPinkSlips", fields: [approvedById], references: [id])
+  student    Student    @relation(fields: [studentId], references: [id])
+  approvedBy AdminUser? @relation("ApprovedPinkSlips", fields: [approvedById], references: [id])
 
   @@index([studentId, status])
   @@index([status, createdAt])
@@ -736,20 +772,20 @@ model PinkSlip {
 }
 
 model LateReturnRequest {
-  id             String           @id @default(auto()) @map("_id") @db.ObjectId
-  studentId      String           @db.ObjectId
-  eta            DateTime
-  reason         String
-  latitude       Float?
-  longitude      Float?
-  status         LateReturnStatus @default(PENDING)
-  adminNote      String?
-  acknowledgedById String?        @db.ObjectId
-  requestedAt    DateTime         @default(now())
-  processedAt    DateTime?
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  studentId        String           @db.ObjectId
+  eta              DateTime
+  reason           String
+  latitude         Float?
+  longitude        Float?
+  status           LateReturnStatus @default(PENDING)
+  adminNote        String?
+  acknowledgedById String?          @db.ObjectId
+  requestedAt      DateTime         @default(now())
+  processedAt      DateTime?
 
-  student        Student          @relation(fields: [studentId], references: [id])
-  acknowledgedBy AdminUser?       @relation("AcknowledgedLateReturns", fields: [acknowledgedById], references: [id])
+  student        Student    @relation(fields: [studentId], references: [id])
+  acknowledgedBy AdminUser? @relation("AcknowledgedLateReturns", fields: [acknowledgedById], references: [id])
 
   @@index([studentId, requestedAt])
   @@index([status, requestedAt])
@@ -757,20 +793,20 @@ model LateReturnRequest {
 }
 
 model ScanSyncAudit {
-  id             String         @id @default(auto()) @map("_id") @db.ObjectId
-  studentId      String         @db.ObjectId
-  scanEventId    String?        @db.ObjectId
-  status         ScanSyncStatus @default(QUEUED)
-  qrTokenHash    String?
-  eventType      String?
-  gateLabel      String?
+  id              String         @id @default(auto()) @map("_id") @db.ObjectId
+  studentId       String         @db.ObjectId
+  scanEventId     String?        @db.ObjectId
+  status          ScanSyncStatus @default(QUEUED)
+  qrTokenHash     String?
+  eventType       String?
+  gateLabel       String?
   deviceTimestamp DateTime?
-  syncedAt       DateTime?
-  failureReason  String?
-  payload        Json?
-  createdAt      DateTime       @default(now())
+  syncedAt        DateTime?
+  failureReason   String?
+  payload         Json?
+  createdAt       DateTime       @default(now())
 
-  student        Student        @relation(fields: [studentId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
 
   @@index([studentId, createdAt])
   @@index([status, createdAt])
@@ -811,28 +847,28 @@ enum RfidEventType {
 // ─── RFID Models ────────────────────────────────────────────
 
 model RfidCredential {
-  id                 String               @id @default(auto()) @map("_id") @db.ObjectId
-  userId             String               @db.ObjectId
-  cardUid            String               @unique
-  printedCardNumber  String?              // Physical card serial number printed on PVC, e.g. "MITS-2026-08492"
-  batchNumber        String?              // Batch grouping for bulk printing, e.g. "BATCH-CSE-2026-A"
-  printStatus        String?              @default("PRINTED") // "PENDING_PRINT", "PRINTED", "REPRINT_REQUESTED"
-  printedAt          DateTime?
-  credentialType     String               @default("MIFARE_CLASSIC")
-  status             RfidCredentialStatus  @default(ACTIVE)
-  label              String?              // "Student RFID Card", "Temp Card #12"
-  issuedAt           DateTime             @default(now())
-  expiresAt          DateTime?
-  assignedBy         String?              @db.ObjectId
-  revokedAt          DateTime?
-  revokedBy          String?              @db.ObjectId
-  revokeReason       String?
-  lastUsedAt         DateTime?
-  tapCount           Int                  @default(0)
-  metadata           Json?
+  id                String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String               @db.ObjectId
+  cardUid           String               @unique
+  printedCardNumber String? // Physical card serial number printed on PVC, e.g. "MITS-2026-08492"
+  batchNumber       String? // Batch grouping for bulk printing, e.g. "BATCH-CSE-2026-A"
+  printStatus       String?              @default("PRINTED") // "PENDING_PRINT", "PRINTED", "REPRINT_REQUESTED"
+  printedAt         DateTime?
+  credentialType    String               @default("MIFARE_CLASSIC")
+  status            RfidCredentialStatus @default(ACTIVE)
+  label             String? // "Student RFID Card", "Temp Card #12"
+  issuedAt          DateTime             @default(now())
+  expiresAt         DateTime?
+  assignedBy        String?              @db.ObjectId
+  revokedAt         DateTime?
+  revokedBy         String?              @db.ObjectId
+  revokeReason      String?
+  lastUsedAt        DateTime?
+  tapCount          Int                  @default(0)
+  metadata          Json?
 
-  user               Student              @relation(fields: [userId], references: [id])
-  transactions       RfidTransaction[]
+  user         Student           @relation(fields: [userId], references: [id])
+  transactions RfidTransaction[]
 
   @@index([userId])
   @@index([status])
@@ -846,25 +882,25 @@ model RfidCredential {
 }
 
 model RfidReader {
-  id              String            @id @default(auto()) @map("_id") @db.ObjectId
-  readerId        String            @unique          // e.g., "READER_HOSTEL_GATE_01"
-  deviceName      String                             // "Hostel Main Gate Reader"
-  location        String?                            // "Boys Hostel - Main Entrance"
-  zone            String?                            // "HOSTEL_GATE", "LAB_BLOCK_A", etc.
-  deviceSecret    String                             // plain secret, or encrypted by AES
-  status          RfidReaderStatus  @default(ACTIVE)
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String           @unique // e.g., "READER_HOSTEL_GATE_01"
+  deviceName      String // "Hostel Main Gate Reader"
+  location        String? // "Boys Hostel - Main Entrance"
+  zone            String? // "HOSTEL_GATE", "LAB_BLOCK_A", etc.
+  deviceSecret    String // plain secret, or encrypted by AES
+  status          RfidReaderStatus @default(ACTIVE)
   firmwareVersion String?
   ipAddress       String?
   lastHeartbeat   DateTime?
-  isOnline        Boolean           @default(false)
-  capabilities    String[]          @default([])     // ["MIFARE_CLASSIC", "NTAG"]
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  registeredBy    String?           @db.ObjectId
+  isOnline        Boolean          @default(false)
+  capabilities    String[]         @default([]) // ["MIFARE_CLASSIC", "NTAG"]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  registeredBy    String?          @db.ObjectId
   metadata        Json?
 
-  transactions    RfidTransaction[]
-  heartbeats      DeviceHeartbeat[]
+  transactions RfidTransaction[]
+  heartbeats   DeviceHeartbeat[]
 
   @@index([status])
   @@index([zone])
@@ -874,23 +910,23 @@ model RfidReader {
 }
 
 model RfidTransaction {
-  id              String          @id @default(auto()) @map("_id") @db.ObjectId
-  readerId        String          @db.ObjectId
-  credentialId    String?         @db.ObjectId
-  userId          String?         @db.ObjectId
-  cardUid         String                          // Always recorded even if unknown
+  id              String           @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String           @db.ObjectId
+  credentialId    String?          @db.ObjectId
+  userId          String?          @db.ObjectId
+  cardUid         String // Always recorded even if unknown
   eventType       RfidEventType
   accessResult    RfidAccessResult
   denialReason    String?
-  deviceTimestamp DateTime                        // Timestamp from ESP32
-  serverTimestamp DateTime        @default(now()) // When backend processed it
-  processingMs    Int?                            // Backend processing latency
-  isOfflineSync   Boolean         @default(false) // Was this queued offline?
+  deviceTimestamp DateTime // Timestamp from ESP32
+  serverTimestamp DateTime         @default(now()) // When backend processed it
+  processingMs    Int? // Backend processing latency
+  isOfflineSync   Boolean          @default(false) // Was this queued offline?
   metadata        Json?
 
-  reader          RfidReader      @relation(fields: [readerId], references: [id])
-  credential      RfidCredential? @relation(fields: [credentialId], references: [id])
-  user            Student?        @relation(fields: [userId], references: [id])
+  reader     RfidReader      @relation(fields: [readerId], references: [id])
+  credential RfidCredential? @relation(fields: [credentialId], references: [id])
+  user       Student?        @relation(fields: [userId], references: [id])
 
   @@index([serverTimestamp])
   @@index([readerId, serverTimestamp])
@@ -905,23 +941,23 @@ model RfidTransaction {
 }
 
 model AccessPolicy {
-  id              String    @id @default(auto()) @map("_id") @db.ObjectId
-  name            String                         // "Hostel Boys Gate Access"
-  description     String?
-  roles           String[]  @default([])         // ["STUDENT", "FACULTY"]
-  studentTypes    String[]  @default([])         // ["HOSTELLER_BOYS"]
-  zones           String[]  @default([])         // ["HOSTEL_GATE"]
-  readerIds       String[]  @default([])         // Specific readers (empty = all in zone)
-  allowedDays     Int[]     @default([])         // 1-7 (Mon-Sun), empty = all days
-  allowedStartTime String?                       // "06:00"
-  allowedEndTime  String?                        // "22:00"
-  credentialTypes String[]  @default([])         // ["RFID", "QR"], empty = all
-  priority        Int       @default(0)          // Higher = evaluated first
-  effect          String    @default("ALLOW")    // "ALLOW" or "DENY"
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  createdBy       String?   @db.ObjectId
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  name             String // "Hostel Boys Gate Access"
+  description      String?
+  roles            String[] @default([]) // ["STUDENT", "FACULTY"]
+  studentTypes     String[] @default([]) // ["HOSTELLER_BOYS"]
+  zones            String[] @default([]) // ["HOSTEL_GATE"]
+  readerIds        String[] @default([]) // Specific readers (empty = all in zone)
+  allowedDays      Int[]    @default([]) // 1-7 (Mon-Sun), empty = all days
+  allowedStartTime String? // "06:00"
+  allowedEndTime   String? // "22:00"
+  credentialTypes  String[] @default([]) // ["RFID", "QR"], empty = all
+  priority         Int      @default(0) // Higher = evaluated first
+  effect           String   @default("ALLOW") // "ALLOW" or "DENY"
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  createdBy        String?  @db.ObjectId
 
   @@index([isActive, priority])
   @@index([zones])
@@ -929,18 +965,18 @@ model AccessPolicy {
 }
 
 model DeviceHeartbeat {
-  id              String    @id @default(auto()) @map("_id") @db.ObjectId
-  readerId        String    @db.ObjectId
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  readerId        String   @db.ObjectId
   isOnline        Boolean
   ipAddress       String?
   firmwareVersion String?
   freeHeapBytes   Int?
-  wifiRssi        Int?                            // Signal strength in dBm
-  uptime          Int?                             // Seconds since boot
-  queuedEvents    Int?                             // Offline events pending sync
-  timestamp       DateTime  @default(now())
+  wifiRssi        Int? // Signal strength in dBm
+  uptime          Int? // Seconds since boot
+  queuedEvents    Int? // Offline events pending sync
+  timestamp       DateTime @default(now())
 
-  reader          RfidReader @relation(fields: [readerId], references: [id])
+  reader RfidReader @relation(fields: [readerId], references: [id])
 
   @@index([readerId, timestamp])
   @@index([timestamp])

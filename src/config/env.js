@@ -46,13 +46,32 @@ const envSchema = z.object({
     ACCESS_QR_TTL_SECONDS: z.coerce.number().int().min(10).max(120).default(30),
     ACCESS_REQUIRE_GEOFENCE: z.string().default('false'),
 
-    // SMTP mail (optional, used for scheduled event CSV reports)
+    // SMTP mail (optional, used for scheduled event CSV reports
+    // AND campus-entry credential delivery emails)
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().optional(),
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     SMTP_FROM: z.string().optional(),
     SMTP_SECURE: z.string().optional(),
+
+    // ── Campus Entry (Smart-ID daily entry) ──────────────────
+    // The name of the evergreen CampusEvent seeded on startup that
+    // anchors every daily student entry. If it does not exist it
+    // will be auto-created by the campusEntry.service on boot.
+    CAMPUS_ENTRY_EVENT_NAME: z.string().default('MITS Campus Entry'),
+    // Email domain(s) allowed for Google sign-in on the STUDENT
+    // portal. Comma-separated. First one is the "official" one
+    // shown on the login page.
+    CAMPUS_ENTRY_STUDENT_DOMAIN: z.string().default('mitsjwl.ac.in'),
+    // Rotating student QR TTL. Kept short so a stolen screenshot
+    // becomes worthless in seconds. Do NOT surface this to the
+    // student UI (spec: no countdown timer).
+    CAMPUS_ENTRY_QR_TTL_SECONDS: z.coerce.number().int().min(10).max(60).default(20),
+    // Public URL shown inside the credentials email (where the
+    // student should log in). If unset the dashboard URL + /student
+    // will be used.
+    CAMPUS_ENTRY_LOGIN_URL: z.string().optional(),
 
     // Cron auth token (used by serverless scheduled triggers)
     CRON_SECRET: z.string().optional(),

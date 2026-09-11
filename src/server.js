@@ -105,6 +105,21 @@ server.listen(PORT, () => {
     logger.info(`🚀 API running on port ${PORT}`);
     logger.info(`   Environment: ${config.NODE_ENV}`);
     logger.info(`   Dashboard CORS: ${config.DASHBOARD_URL}`);
+
+    // Best-effort seed of the evergreen campus-entry event. If no
+    // SUPER_ADMIN exists yet the seed defers to first admin login;
+    // do not fail server startup on this.
+    setImmediate(async () => {
+        try {
+            const campusEntry = require('./services/campusEntry.service');
+            const id = await campusEntry.getOrCreateEvergreenEvent();
+            if (id) {
+                logger.info(`🎫 Campus-entry evergreen event ready (id=${id})`);
+            }
+        } catch (err) {
+            logger.warn('Campus-entry seed skipped:', err?.message || err);
+        }
+    });
 });
 
 // ── Graceful Shutdown ───────────────────────────────────────

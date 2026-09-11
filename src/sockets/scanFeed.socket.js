@@ -103,4 +103,28 @@ function emitSessionUpdate(sessionData) {
     }
 }
 
-module.exports = { emitScanEvent, emitExitRuleChange, emitSessionUpdate };
+/**
+ * Emit a campus-entry scan to admin dashboards. Kept separate from
+ * emitScanEvent so admin UIs can subscribe to only the campus-entry
+ * feed without receiving every gate/access scan on a busy campus.
+ */
+function emitCampusEntryScan(payload) {
+    const enriched = {
+        ...payload,
+        badge: payload?.badge || (payload?.ok ? 'GREEN' : 'AMBER'),
+        time: payload?.time || payload?.scannedAt || new Date(),
+    };
+    try {
+        const { io } = require('../server');
+        if (io) io.to('dashboard').emit('CAMPUS_ENTRY_SCAN', enriched);
+    } catch (err) {
+        logger.warn('Failed to emit campus-entry scan (Socket.IO):', err?.message || 'Unknown error');
+    }
+    try {
+        sseHub.broadcast('CAMPUS_ENTRY_SCAN', enriched);
+    } catch (err) {
+        logger.warn('Failed to emit campus-entry scan (SSE):', err?.message || 'Unknown error');
+    }
+}
+
+module.exports = { emitScanEvent, emitExitRuleChange, emitSessionUpdate, emitCampusEntryScan };
