@@ -523,32 +523,58 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
         return { ok: false, reason: 'WRONG_EVENT', message: 'This QR is not for campus entry.' };
     }
 
-    // Atomic single-entry consume:
-    // Only rows where entryUsedAt IS NULL are eligible. If updateMany
-    // reports count===0 the participant is already locked; otherwise
-    // we won the race.
+    // ─── Hot path ───────────────────────────────────────────────
+    // Two DB calls in parallel:
+    //   1. Atomic single-entry consume via updateMany. Only rows where
+    //      entryUsedAt IS NULL are eligible. count===0 means someone
+    //      else already claimed it (or it doesn't exist / is inactive).
+    //   2. Read the participant + student in one shot for the UI.
+    //
+    // Running these in parallel saves one full DB round-trip on the
+    // happy path (~50–150ms on Vercel↔Atlas). We accept that on the
+    // race-lose path the read is "stale" (doesn't reflect the lock we
+    // just tried to take) — we don't display that field anyway; we
+    // only use entryUsedAt from the row to prove it's already used.
     const now = new Date();
-    const claim = await prisma.eventParticipant.updateMany({
-        where: { id: participantId, entryUsedAt: null, isActive: true },
-        data: { entryUsedAt: now, entryScannedById: scannedById || null },
-    });
-
-    if (claim.count === 0) {
-        // Either already used, deactivated, or never existed.
-        const participant = await prisma.eventParticipant.findUnique({
+    const [claim, participant] = await Promise.all([
+        prisma.eventParticipant.updateMany({
+            where: { id: participantId, entryUsedAt: null, isActive: true },
+            data: { entryUsedAt: now, entryScannedById: scannedById || null },
+        }),
+        prisma.eventParticipant.findUnique({
             where: { id: participantId },
             select: {
                 id: true,
-                entryUsedAt: true,
-                isActive: true,
                 fullName: true,
                 enrollmentNo: true,
-                student: { select: { department: true, year: true, photoUrl: true } },
+                email: true,
+                entryUsedAt: true,
+                isActive: true,
+                studentId: true,
+                student: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        enrollmentNo: true,
+                        email: true,
+                        department: true,
+                        year: true,
+                        section: true,
+                        photoUrl: true,
+                        phone: true,
+                        bloodGroup: true,
+                        studentType: true,
+                    },
+                },
             },
-        });
-        if (!participant) {
-            return { ok: false, reason: 'NOT_FOUND', message: 'Student not found.' };
-        }
+        }),
+    ]);
+
+    if (!participant) {
+        return { ok: false, reason: 'NOT_FOUND', message: 'Student not found.' };
+    }
+
+    if (claim.count === 0) {
         if (!participant.isActive) {
             return { ok: false, reason: 'DEACTIVATED', message: 'This student is deactivated.' };
         }
@@ -557,8 +583,8 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
             reason: 'ALREADY_ENTERED',
             message: 'Entry recorded — this student has already entered and cannot enter again.',
             student: {
-                fullName: participant.fullName,
-                enrollmentNo: participant.enrollmentNo,
+                fullName: participant.student?.fullName || participant.fullName,
+                enrollmentNo: participant.student?.enrollmentNo || participant.enrollmentNo,
                 department: participant.student?.department || null,
                 year: participant.student?.year || null,
                 photoUrl: participant.student?.photoUrl || null,
@@ -567,39 +593,14 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
         };
     }
 
-    // Winning path — read back the participant with student for the
-    // scanner UI. Also write a scan event for the admin feed.
-    const participant = await prisma.eventParticipant.findUnique({
-        where: { id: participantId },
-        select: {
-            id: true,
-            fullName: true,
-            enrollmentNo: true,
-            email: true,
-            entryUsedAt: true,
-            studentId: true,
-            student: {
-                select: {
-                    id: true,
-                    fullName: true,
-                    enrollmentNo: true,
-                    email: true,
-                    department: true,
-                    year: true,
-                    section: true,
-                    photoUrl: true,
-                    phone: true,
-                    bloodGroup: true,
-                    studentType: true,
-                },
-            },
-        },
-    });
-
-    // Record a durable scan row (indexed for the admin feed).
-    let scanRow = null;
-    try {
-        scanRow = await prisma.eventStayScan.create({
+    // ─── Winning path ────────────────────────────────────────────
+    // The atomic lock is already durable — the student CANNOT enter
+    // again even if the process dies right here. Persisting the
+    // EventStayScan row + backfilling entryScanId is purely for the
+    // admin feed / audit trail, so we do them FIRE-AND-FORGET after
+    // returning the response. Saves ~2 DB round-trips (~100–300ms).
+    setImmediate(() => {
+        prisma.eventStayScan.create({
             data: {
                 eventId,
                 participantId: participant.id,
@@ -614,25 +615,26 @@ async function verifyAndConsumeQr({ rawToken, scannedById, gateId = null, metada
                     ...metadata,
                 },
             },
-            select: { id: true, scannedAt: true },
-        });
-
-        // Backfill scan reference on the participant so revoke can audit it.
-        await prisma.eventParticipant.update({
-            where: { id: participant.id },
-            data: { entryScanId: scanRow.id },
-        }).catch(() => {});
-    } catch (err) {
-        logger.warn('[CAMPUS-ENTRY] Failed to record EventStayScan', { error: err.message });
-    }
+            select: { id: true },
+        })
+            .then((row) =>
+                prisma.eventParticipant.update({
+                    where: { id: participant.id },
+                    data: { entryScanId: row.id },
+                }).catch(() => { }),
+            )
+            .catch((err) => {
+                logger.warn('[CAMPUS-ENTRY] Async scan persist failed', { error: err.message });
+            });
+    });
 
     return {
         ok: true,
         reason: 'ENTRY_RECORDED',
         message: 'Entry recorded.',
         participantId: participant.id,
-        scanId: scanRow?.id || null,
-        scannedAt: scanRow?.scannedAt || now,
+        scanId: null, // written asynchronously; admin feed still gets it via socket + 3s refetch
+        scannedAt: now,
         student: {
             fullName: participant.student?.fullName || participant.fullName,
             enrollmentNo: participant.student?.enrollmentNo || participant.enrollmentNo,
