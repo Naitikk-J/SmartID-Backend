@@ -4,7 +4,7 @@ describe('scan.service helpers', () => {
     let scan;
     beforeAll(() => {
         // Make sure config doesn't try to crash on missing AES_KEY.
-        process.env.AES_KEY = 'REDACTED';
+        process.env.AES_KEY = "0000000000000000000000000000000000000000000000000000000000000000";
         scan = require('../../src/services/scan.service');
     });
 

@@ -8,11 +8,14 @@ dotenv.config();
 const prisma = new PrismaClient();
 
 async function createFaculty() {
-    const name = "REDACTED";
-    const email = "REDACTED";
-    const password = "REDACTED";
+    const name = process.env.FACULTY_SEED_NAME;
+    const email = process.env.FACULTY_SEED_EMAIL;
+    const password = process.env.FACULTY_SEED_PASSWORD;
     const role = "FACULTY";
-    const department = "REDACTED";
+    const department = process.env.FACULTY_SEED_DEPARTMENT;
+    if (!name || !email || !password || !department) {
+        throw new Error("Set FACULTY_SEED_NAME, FACULTY_SEED_EMAIL, FACULTY_SEED_PASSWORD, FACULTY_SEED_DEPARTMENT");
+    }
 
     console.log('--- Faculty Creation Script ---');
     console.log(`Target Email: ${email}`);
